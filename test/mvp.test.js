@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
-const { buildAudioFilter, buildMusicPlan, buildMultiTrackFilter, freezeTailDuration, inferMood, mergeIntervals, runBatch, scanMusic } = require('../src/mvp');
+const { DEFAULT_TRANSITION_FADE_SECONDS, buildAudioFilter, buildMusicPlan, buildMultiTrackFilter, freezeTailDuration, inferMood, mergeIntervals, runBatch, scanMusic } = require('../src/mvp');
 
 const execFileAsync = promisify(execFile);
 const ffmpeg = process.env.FFMPEG || 'ffmpeg';
@@ -95,6 +95,32 @@ test('rejects an empty BGM library before processing', async () => {
   const musicDir = path.join(root, 'empty');
   await fs.mkdir(musicDir);
   await assert.rejects(scanMusic(musicDir), /BGM 目录没有找到音频文件/);
+});
+
+test('configures track transition fades and caps them for short segments', () => {
+  const segments = [{ start: 0, end: 10 }, { start: 10, end: 20 }];
+  assert.equal(DEFAULT_TRANSITION_FADE_SECONDS, 1);
+  const defaultGraph = buildMultiTrackFilter(segments, 20, { fadeIn: 0, fadeOut: 0 }, []);
+  assert.match(defaultGraph, /afade=t=out:st=9\.5:d=1/);
+  assert.match(defaultGraph, /afade=t=in:st=0:d=1/);
+
+  const customGraph = buildMultiTrackFilter(segments, 20, { transitionFadeDuration: 0.4, fadeIn: 0, fadeOut: 0 }, []);
+  assert.match(customGraph, /afade=t=out:st=9\.8:d=0\.4/);
+  assert.match(customGraph, /afade=t=in:st=0:d=0\.4/);
+
+  const disabledGraph = buildMultiTrackFilter(segments, 20, { transitionFadeEnabled: false, fadeIn: 0, fadeOut: 0 }, []);
+  assert.match(disabledGraph, /adelay=10000:all=1/);
+  assert.doesNotMatch(disabledGraph, /afade=t=(?:in|out):st=[^;]*d=/);
+
+  const shortGraph = buildMultiTrackFilter(
+    [{ start: 0, end: 0.8 }, { start: 0.8, end: 1.6 }],
+    1.6,
+    { transitionFadeDuration: 5, fadeIn: 0, fadeOut: 0 },
+    [],
+  );
+  assert.match(shortGraph, /afade=t=out:st=0\.6:d=0\.4/);
+  assert.match(shortGraph, /afade=t=in:st=0:d=0\.4/);
+  assert.match(shortGraph, /adelay=600:all=1/);
 });
 
 test('mood rules and interval merging stay deterministic', () => {

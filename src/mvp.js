@@ -392,7 +392,7 @@ function chooseTrack(groups, mood, trackUses, episodeTracks) {
 }
 
 const MIN_MULTI_TRACK_DURATION = 45;
-const SCENE_CROSSFADE_SECONDS = 0.35;
+const DEFAULT_TRANSITION_FADE_SECONDS = 1;
 
 function classifyMoodText(text, groups) {
   const hits = MOOD_RULES.map((rule) => ({
@@ -527,9 +527,16 @@ function buildDuckExpression(intervals, duckDb) {
   }, '1');
 }
 
+function transitionFadeSeconds(options) {
+  const requested = Number(options?.transitionFadeDuration);
+  return Number.isFinite(requested) ? Math.max(0, requested) : DEFAULT_TRANSITION_FADE_SECONDS;
+}
+
 function buildMultiTrackFilter(segments, duration, options, intervals, hasDialogue = true) {
   const shortest = Math.min(...segments.map((segment) => segment.end - segment.start));
-  const crossfade = segments.length > 1 ? Math.min(SCENE_CROSSFADE_SECONDS, shortest / 2) : 0;
+  const crossfade = segments.length > 1 && options.transitionFadeEnabled !== false
+    ? Math.min(transitionFadeSeconds(options), shortest / 2)
+    : 0;
   const graph = [];
   segments.forEach((segment, index) => {
     const renderStart = index === 0 ? 0 : Math.max(0, segment.start - crossfade / 2);
@@ -756,6 +763,8 @@ async function renderEpisode({ videoPath, outputDir, groups, state, options, cat
       maxTracksPerEpisode: options.maxTracksPerEpisode > 0 ? options.maxTracksPerEpisode : undefined,
       fadeIn: options.fadeIn,
       fadeOut: options.fadeOut,
+      transitionFadeEnabled: options.transitionFadeEnabled !== false,
+      transitionFadeDuration: transitionFadeSeconds(options),
     })).digest('hex');
 
     if (!options.overwrite && selectedOutputs.outputTranscript && transcriptRequired && await pathExists(asrTranscriptPath) && !ownsAsrTranscript) {
@@ -968,6 +977,7 @@ async function runBatch(options, logger = console) {
 }
 module.exports = {
   AUDIO_EXTENSIONS,
+  DEFAULT_TRANSITION_FADE_SECONDS,
   VIDEO_EXTENSIONS,
   buildAudioFilter,
   buildMusicPlan,

@@ -70,12 +70,18 @@ test('desktop defaults use packaged model and media-tool paths', () => {
   assert.equal(info.defaults.outputVideo, true);
   assert.equal(info.defaults.outputTimeline, true);
   assert.equal(info.defaults.outputTranscript, true);
+  assert.equal(info.defaults.transitionFadeEnabled, true);
+  assert.equal(info.defaults.transitionFadeDuration, 1);
   assert.equal('transcriberExecutable' in info.defaults, false);
 });
 
 test('desktop batch settings reject invalid BGM caps and empty output selection', async () => {
   const base = { videos: 'videos', music: 'music', output: 'output', transcribe: false };
   await assert.rejects(startBatch({ ...base, maxTracksPerEpisode: 2.5 }, () => {}), /每集 BGM 上限必须是非负整数/);
+  await assert.rejects(startBatch({ ...base, transitionFadeEnabled: 'false' }, () => {}), /曲目衔接淡入淡出必须使用开关值/);
+  await assert.rejects(startBatch({ ...base, transitionFadeDuration: -0.1 }, () => {}), /曲目衔接时长必须是非负数字/);
+  await assert.rejects(startBatch({ ...base, transitionFadeDuration: 'invalid' }, () => {}), /曲目衔接时长必须是非负数字/);
+  await assert.rejects(startBatch({ ...base, transitionFadeDuration: null }, () => {}), /曲目衔接时长必须是非负数字/);
   await assert.rejects(startBatch({ ...base, maxTracksPerEpisode: 2, outputAudio: false, outputVideo: false, outputTimeline: false, outputTranscript: false }, () => {}), /请至少选择一种输出内容/);
   await assert.rejects(startBatch({ ...base, outputAudio: false, outputVideo: false, outputTimeline: false, outputTranscript: true }, () => {}), /开启本地转录/);
 });

@@ -4,7 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const { pathToFileURL } = require('node:url');
-const { runBatch, scanMusic, scanVideos } = require('../../src/mvp');
+const { DEFAULT_TRANSITION_FADE_SECONDS, runBatch, scanMusic, scanVideos } = require('../../src/mvp');
 
 const DEFAULTS = {
   videos: '',
@@ -13,6 +13,8 @@ const DEFAULTS = {
   modelPath: process.env.FASTER_WHISPER_MODEL || 'small',
   language: process.env.FASTER_WHISPER_LANGUAGE || 'auto',
   freezeTail: '0:00',
+  transitionFadeEnabled: true,
+  transitionFadeDuration: DEFAULT_TRANSITION_FADE_SECONDS,
   maxTracksPerEpisode: 3,
   outputAudio: true,
   outputVideo: true,
@@ -38,11 +40,18 @@ function asNumber(value, fallback) { const number = Number(value); return Number
 
 async function assertRunConfig(input, runtime = {}) {
   const maxTracksInput = input?.maxTracksPerEpisode;
+  const rawTransitionFadeDuration = input?.transitionFadeDuration;
+  const transitionFadeDuration = rawTransitionFadeDuration === undefined
+    ? DEFAULTS.transitionFadeDuration
+    : typeof rawTransitionFadeDuration === 'number' ? rawTransitionFadeDuration
+      : typeof rawTransitionFadeDuration === 'string' && rawTransitionFadeDuration.trim() !== '' ? Number(rawTransitionFadeDuration) : NaN;
   const config = {
     videos: cleanPath(input?.videos), music: cleanPath(input?.music), output: cleanPath(input?.output),
     transcripts: cleanPath(input?.transcripts) || null, modelPath: cleanPath(runtime.modelPath) || cleanPath(input?.modelPath) || DEFAULTS.modelPath,
     language: cleanPath(input?.language) || 'auto', transcribe: Boolean(input?.transcribe), mood: cleanPath(input?.mood) || null, autoDuck: Boolean(input?.autoDuck),
     duckDb: asNumber(input?.duckDb, -10), fadeIn: Math.max(0, asNumber(input?.fadeIn, 2)), fadeOut: Math.max(0, asNumber(input?.fadeOut, 2)), freezeTail: cleanPath(input?.freezeTail) || '0:00',
+    transitionFadeEnabled: input?.transitionFadeEnabled === undefined ? DEFAULTS.transitionFadeEnabled : input.transitionFadeEnabled,
+    transitionFadeDuration,
     maxTracksPerEpisode: maxTracksInput === undefined ? DEFAULTS.maxTracksPerEpisode : String(maxTracksInput).trim() ? Number(maxTracksInput) : NaN,
     outputAudio: input?.outputAudio !== false, outputVideo: input?.outputVideo !== false,
     outputTimeline: input?.outputTimeline !== false, outputTranscript: input?.outputTranscript !== false,
@@ -50,6 +59,8 @@ async function assertRunConfig(input, runtime = {}) {
   };
   for (const key of ['videos', 'music', 'output']) if (!config[key]) throw new Error(`请先选择${key === 'videos' ? '视频目录' : key === 'music' ? 'BGM 目录' : '输出目录'}`);
   if (config.duckDb > 0) throw new Error('对白 ducking 增益必须是 0 或负数');
+  if (typeof config.transitionFadeEnabled !== 'boolean') throw new Error('曲目衔接淡入淡出必须使用开关值');
+  if (!Number.isFinite(config.transitionFadeDuration) || config.transitionFadeDuration < 0) throw new Error('曲目衔接时长必须是非负数字');
   if (!Number.isSafeInteger(config.maxTracksPerEpisode) || config.maxTracksPerEpisode < 0) throw new Error('每集 BGM 上限必须是非负整数（0 表示不限制）');
   for (const key of ['outputAudio', 'outputVideo', 'outputTimeline', 'outputTranscript']) {
     if (input?.[key] !== undefined && typeof input[key] !== 'boolean') throw new Error('输出内容设置必须使用开关值');
