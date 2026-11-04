@@ -81,17 +81,18 @@ node src/cli.js --videos "C:\Media\Episodes" --music "C:\Media\BGM" --output "C:
 
 ## 构建 Windows 安装包
 
-构建需要 Node.js、Python、项目依赖、PyInstaller、一个本机 faster-whisper small 模型目录，以及模型构建脚本要求的 FFmpeg 发行包。FFmpeg 下载地址和 SHA-256 校验值在 `tools/build-windows.ps1` 中维护。
+仓库内含固定版本的 faster-whisper small 模型包，位于 `models/`，约 425 MiB。模型归档拆成多个小于 45 MB 的源码文件，以便普通 GitHub 源码下载；构建脚本会自动重组、解压并验证模型文件的 SHA-256。无需额外下载模型。若要使用另一份本机模型，可选设置 `FASTER_WHISPER_MODEL` 覆盖默认模型。
+
+需要 Windows、Node.js 22.12 或更高版本、Python、项目依赖及可用网络。构建脚本会校验并下载固定版本的 FFmpeg；`npm ci` 会安装 Electron。首次构建可能需要下载这些工具依赖，但不会单独下载模型。
 
 ```powershell
 npm ci
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
-$env:FASTER_WHISPER_MODEL = "C:\Models\faster-whisper-small"
 npm run dist:win
 ```
 
-模型目录必须包含 faster-whisper 模型文件。构建产物写入 `release/`，不属于源码仓库。
+构建产物写入 `release/`，不属于源码仓库；安装包内的 `resources/licenses/` 包含第三方许可说明。模型来源和第三方许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 与 [models/README.md](models/README.md)。
 
 ## 开发与测试
 
@@ -114,7 +115,4 @@ npm test
 
 ## 许可证
 
-此仓库当前未附开源许可证。公开可见不等于获得复制、修改或再分发代码的授权。
-
-
-
+仓库尚未为本项目原创代码授予开源许可证；公开可见不等于获得复制、修改或再分发该代码的授权。模型和第三方组件按各自上游许可证附带说明，详情见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

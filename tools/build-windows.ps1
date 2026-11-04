@@ -2,31 +2,63 @@ $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Set-Location $root
 
+function Get-Sha256([string]$path) {
+  $stream = [IO.File]::OpenRead($path)
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try { return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant() }
+  finally { $stream.Dispose(); $sha.Dispose() }
+}
+
 $modelSource = $env:FASTER_WHISPER_MODEL
-if (-not $modelSource) { throw 'Set FASTER_WHISPER_MODEL to a local faster-whisper small model directory before building.' }
-if (-not (Test-Path -LiteralPath (Join-Path $modelSource 'model.bin'))) { throw "Missing faster-whisper model at $modelSource" }
+if (-not $modelSource) {
+  $modelParts = Get-ChildItem -LiteralPath (Join-Path $root 'models') -Filter 'faster-whisper-small.zip.part*' -File | Sort-Object Name
+  if (-not $modelParts) { throw 'Bundled faster-whisper model archive parts are missing.' }
+  $modelArchive = Join-Path $root 'build\faster-whisper-small.zip'
+  $archiveStream = [IO.File]::Create($modelArchive)
+  try {
+    foreach ($part in $modelParts) {
+      $partStream = [IO.File]::OpenRead($part.FullName)
+      try { $partStream.CopyTo($archiveStream) } finally { $partStream.Dispose() }
+    }
+  } finally { $archiveStream.Dispose() }
+  $modelExtract = Join-Path $root ('build\model-source-' + [guid]::NewGuid().ToString('N'))
+  Expand-Archive -LiteralPath $modelArchive -DestinationPath $modelExtract
+  $modelSource = $modelExtract
+}
+if (-not (Test-Path -LiteralPath (Join-Path $modelSource 'model.bin'))) { throw 'The faster-whisper small model directory is missing model.bin.' }
 $modelTarget = Join-Path $root 'runtime\model\small'
 New-Item -ItemType Directory -Force -Path $modelTarget | Out-Null
 if ((Resolve-Path -LiteralPath $modelSource).Path -ne (Resolve-Path -LiteralPath $modelTarget).Path) {
   foreach ($name in @('config.json', 'model.bin', 'README.md', 'tokenizer.json', 'vocabulary.txt')) {
     $source = Join-Path $modelSource $name
-    if (-not (Test-Path -LiteralPath $source)) { throw "Missing model file: $source" }
+    if (-not (Test-Path -LiteralPath $source)) { throw "Missing model file: $name" }
     Copy-Item -LiteralPath $source -Destination (Join-Path $modelTarget $name) -Force
   }
 }
-$modelHash = (Get-FileHash -LiteralPath (Join-Path $modelTarget 'model.bin') -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($modelHash -ne '3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671') { throw 'Unexpected faster-whisper small model hash; refusing to package it.' }
+$expectedModelHashes = @{
+  'config.json' = 'b55496ac7940a7ae47d2c01eab40edfd8701feec1229d9cce3b40014383fb828'
+  'model.bin' = '3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671'
+  'README.md' = '329373481008c7c38654aff8ecdcf0163c211557cc7ba8e2ef6f2f84b4f75ec8'
+  'tokenizer.json' = 'fb7b63191e9bb045082c79fd742a3106a12c99513ab30df4a0d47fa6cb6fd0ab'
+  'vocabulary.txt' = '34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913'
+}
+foreach ($name in $expectedModelHashes.Keys) {
+  $modelFile = Join-Path $modelTarget $name
+  if (-not (Test-Path -LiteralPath $modelFile)) { throw "Bundled model file is missing: $name" }
+  $actualHash = (Get-Sha256 $modelFile)
+  if ($actualHash -ne $expectedModelHashes[$name]) { throw "Unexpected faster-whisper model file hash: $name" }
+}
 Set-Content -LiteralPath (Join-Path $modelTarget 'SOURCE.txt') -Encoding UTF8 -Value @(
   'Model: Systran/faster-whisper-small',
   'Repository revision: 536b0662742c02347bc0e980a01041f333bce120',
-  'License metadata: MIT (see README.md / model card)',
+  'Model card declares MIT; original openai/whisper-small model card declares Apache-2.0 (see THIRD_PARTY_NOTICES.md)',
   'model.bin SHA256: 3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671'
 )
 
 $ffmpegArchive = Join-Path $root 'build\ffmpeg-n9.0.2-45-g1e65c6cd5d-win64-lgpl-shared-9.0.zip'
 $ffmpegUrl = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-11-03-12-50/ffmpeg-n9.0.2-45-g1e65c6cd5d-win64-lgpl-shared-9.0.zip'
 if (-not (Test-Path -LiteralPath $ffmpegArchive)) { Invoke-WebRequest -Uri $ffmpegUrl -OutFile $ffmpegArchive }
-$ffmpegHash = (Get-FileHash -LiteralPath $ffmpegArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+$ffmpegHash = (Get-Sha256 $ffmpegArchive)
 if ($ffmpegHash -ne 'be035a7f1763fdab8430949bed65eab94dc91cbdea1d03607e4ac5403e73ce76') { throw 'FFmpeg archive hash mismatch; refusing to package an unverified build.' }
 $ffmpegExtract = Join-Path $root 'build\ffmpeg-n9.0.2-extract'
 Expand-Archive -LiteralPath $ffmpegArchive -DestinationPath $ffmpegExtract -Force

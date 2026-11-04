@@ -42,6 +42,14 @@
       {
         "from": "runtime/model/small",
         "to": "model/small"
+      },
+      {
+        "from": "THIRD_PARTY_NOTICES.md",
+        "to": "licenses/THIRD_PARTY_NOTICES.md"
+      },
+      {
+        "from": "licenses",
+        "to": "licenses"
       }
     ],
     "win": {
