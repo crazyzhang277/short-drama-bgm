@@ -1,0 +1,38 @@
+# Dependencies and local environments
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# User media, generated output, and per-machine state
+output/
+*.part.wav
+*.part.csv
+.mvp-state.json
+.env
+.env.*
+!.env.example
+
+# Build intermediates, bundled runtimes, and release artifacts
+build/
+release/
+release-*/
+runtime/
+dist/
+
+# Local design research and prototypes
+.codegraph/
+design-demos/
+/选曲智能化升级计划书.md
+/deep-research-report.md
+/design-spec.md
+/direction-approved.md
+/directions.md
+
+# Operating system and editor files
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/

@@ -1,0 +1,67 @@
+{
+  "name": "short-drama-bgm-mvp",
+  "version": "0.2.8",
+  "private": true,
+  "description": "Local batch BGM generation MVP for short-drama videos.",
+  "main": "desktop/main.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/cli.js",
+    "test": "node --test",
+    "desktop": "electron .",
+    "start:desktop": "electron .",
+    "dist:win": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-windows.ps1"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "electron": "^45.2.2",
+    "electron-builder": "^26.18.1"
+  },
+  "build": {
+    "appId": "com.bgmstudio.shortdrama",
+    "productName": "自动配背景音乐工作台",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "desktop/**/*",
+      "src/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "runtime/transcriber/bgm-transcriber",
+        "to": "transcriber"
+      },
+      {
+        "from": "runtime/ffmpeg",
+        "to": "ffmpeg"
+      },
+      {
+        "from": "runtime/model/small",
+        "to": "model/small"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "自动配背景音乐工作台",
+      "deleteAppDataOnUninstall": false
+    },
+    "publish": [],
+    "electronDist": "node_modules/electron/dist"
+  },
+  "overrides": {
+    "minimatch": "^11.0.1"
+  }
+}
