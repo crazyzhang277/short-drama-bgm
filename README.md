@@ -19,7 +19,7 @@
 
 ## 从源码运行
 
-需要 Windows、Node.js 20 或更高版本，以及可从 `PATH` 调用的 FFmpeg 和 ffprobe。
+需要 Windows、Node.js 22.12 或更高版本，以及可从 `PATH` 调用的 FFmpeg 和 ffprobe。
 
 ```powershell
 npm ci
@@ -115,5 +115,6 @@ npm test
 ## 许可证
 
 此仓库当前未附开源许可证。公开可见不等于获得复制、修改或再分发代码的授权。
+
 
 

@@ -13,7 +13,7 @@
     "dist:win": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-windows.ps1"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.12.0"
   },
   "devDependencies": {
     "electron": "^45.2.2",
