@@ -108,7 +108,7 @@ async function refresh(quiet = false) {
       state.selectedEpisode = state.data.rows[0]?.episode || '';
     }
     if (['timeline', 'transcript'].includes(state.view) && state.selectedEpisode) await loadDetail(false);
-    render();
+    render(true);
     if (!quiet && state.data.warning) showToast(state.data.warning, true);
   } catch (error) {
     showToast(error.message, true);
@@ -127,11 +127,11 @@ async function loadDetail(showError = true) {
 }
 
 function configInput(key, label, pickAction) {
-  return `<div class="path-row"><label for="config-${key}">${label}</label><input id="config-${key}" class="text-input" data-config-key="${key}" value="${escapeHtml(state.config[key] || '')}" placeholder="选择目录或输入路径"><button class="pick-button" data-action="${pickAction}" title="选择目录">⌕</button></div>`;
+  return `<div class="path-row"><label for="config-${key}">${label}</label><input id="config-${key}" class="text-input" data-config-key="${key}" value="${escapeHtml(state.config[key] || '')}" placeholder="选择目录或输入路径"><button class="pick-button" data-action="${pickAction}" aria-label="选择${label}目录">⌕</button></div>`;
 }
 
 function videoConfigInput() {
-  return `<div class="path-row video-path-row"><label for="config-videos">视频</label><input id="config-videos" class="text-input" data-config-key="videos" value="${escapeHtml(state.config.videos || '')}" placeholder="选择单个视频或视频目录"><button class="pick-button" data-action="choose-videos" title="选择视频目录">⌕</button><button class="pick-button video-file-button" data-action="choose-video-file" title="选择单个视频">文件</button></div>`;
+  return `<div class="path-row video-path-row"><label for="config-videos">视频</label><input id="config-videos" class="text-input" data-config-key="videos" value="${escapeHtml(state.config.videos || '')}" placeholder="选择单个视频或视频目录"><button class="pick-button" data-action="choose-videos" aria-label="选择视频目录">⌕</button><button class="pick-button video-file-button" data-action="choose-video-file" aria-label="选择单个视频文件">文件</button></div>`;
 }
 
 function renderDesk() {
@@ -139,28 +139,29 @@ function renderDesk() {
   const summary = state.data.summary || {};
   const actualCompleted = Math.max(0, Number(summary.completed) || 0);
   const actualSkipped = Math.max(0, Number(summary.skipped) || 0);
-  const completed = rows.length ? rows.filter((row) => row.status === 'completed' || row.status === 'skipped').length : actualCompleted + actualSkipped;
+  const completed = rows.length ? rows.filter((row) => row.status === 'completed').length : actualCompleted;
+  const skipped = rows.length ? rows.filter((row) => row.status === 'skipped').length : actualSkipped;
   const failed = rows.length ? rows.filter((row) => row.status === 'failed' || row.status === 'interrupted').length : Math.max(0, Number(summary.failed) || 0) + Math.max(0, Number(summary.interrupted) || 0);
   const total = rows.length || Number(summary.videos) || 0;
-  const pending = Math.max(0, total - completed - failed - rows.filter((row) => row.status === 'processing').length);
   const processing = rows.filter((row) => row.status === 'processing').length;
+  const pending = Math.max(0, total - completed - skipped - failed - processing);
   const model = state.data.model || {};
-  const chainReady = Boolean(state.config.videos && state.config.music && state.config.output);
-  const health = chainReady ? 5 : 2;
+  const paths = state.data.paths || {};
+  const preflightRows = [['视频', paths.videos], ['BGM', paths.music], ['输出', paths.output]].map(([name, check]) => `<div class="preflight-row"><span>${name}</span><strong class="preflight-state ${check?.status || 'checking'}">${check?.label || '检查中'}</strong></div>`).join('');
   const current = selectedRow();
   const logs = state.logs.slice(-18).reverse();
 
   return `<section class="view">
-    <div class="view-header"><div><h1>批次概览</h1></div><div class="header-actions"><button class="button ghost" data-action="new-batch">新建批次</button><button class="button ${state.running ? 'warn' : 'primary'}" data-action="${state.running ? 'stop' : 'start'}">${state.running ? '停止当前批次' : '开始批次'}</button></div></div>
-    <div class="metrics"><div class="metric accent"><b>${completed}/${total || '—'}</b><span>已完成 / 已跳过</span></div><div class="metric good"><b>${state.running ? `${processing || 1}` : '空闲'}</b><span>${state.running ? '当前处理中' : '批次状态'}</span></div><div class="metric"><b>${failed}</b><span>失败 / 中断</span></div><div class="metric"><b>${pending}</b><span>待处理</span></div></div>
+    <div class="view-header"><div><h1>批次概览</h1></div><div class="header-actions"><button class="button ghost" data-action="new-batch">新建批次</button></div></div>
+    <div class="metrics"><div class="metric accent"><b>${completed}</b><span>已完成</span></div><div class="metric"><b>${skipped}</b><span>已跳过</span></div><div class="metric good"><b>${state.running ? `${processing || 1}` : '空闲'}</b><span>${state.running ? '当前处理中' : '批次状态'}</span></div><div class="metric"><b>${failed}</b><span>失败 / 中断</span></div><div class="metric"><b>${pending}</b><span>待处理 / 共 ${total || 0} 集</span></div></div>
     <div class="layout-2">
       <div>
-        <div class="panel"><div class="panel-head"><strong>最近一次运行 · ${total || 0} 集</strong><small>${summary.generatedAt ? escapeHtml(new Date(summary.generatedAt).toLocaleString('zh-CN')) : '尚未运行'}</small></div><div class="panel-body"><div class="healthline"><span>链路健康</span><b>${chainReady ? '可运行 · 本地' : '等待目录配置'}</b></div><div class="health-track">${Array.from({ length: 5 }, (_, index) => `<i class="${index < health ? '' : 'pending'}"></i>`).join('')}</div><div class="health-caption">扫描 → 语音转录 → 情绪规则 → 选曲 → 按设置导出所选内容</div></div></div>
+        <div class="panel"><div class="panel-head"><strong>目录预检</strong><small>开始批次前检查访问状态</small></div><div class="panel-body"><div class="preflight" role="group" aria-label="运行目录预检">${preflightRows}</div></div></div>
         <div class="panel"><div class="panel-head"><strong>批次队列</strong><small>${state.data.warning ? escapeHtml(state.data.warning) : '点击一集进入时间轴 / 转录审阅'}</small></div>${rows.length ? `<table class="queue-table"><thead><tr><th>集数</th><th>状态</th><th>时长</th><th>情绪 / 音乐</th><th>产物</th><th></th></tr></thead><tbody>${rows.map((row) => `<tr class="queue-row ${row.episode === state.selectedEpisode ? 'selected' : ''}" data-action="select-episode" data-episode="${escapeHtml(row.episode)}"><td><span class="episode-name">${escapeHtml(row.episode)}</span><span class="episode-sub">${row.error ? escapeHtml(row.error) : escapeHtml(shortPath(row.videoPath, 48))}</span></td><td><span class="status-chip ${statusClass(row.status)}">${statusLabel(row.status)}</span></td><td>${formatSeconds(row.duration)}</td><td>${escapeHtml(row.mood || '未判定')}<span class="episode-sub">${escapeHtml((row.tracks || []).map((track) => String(track).split(/[\\/]/).pop()).join(' · ') || '—')}</span></td><td><span class="episode-sub">${escapeHtml(artifactSummary(row))}</span></td><td><button class="button compact ghost" data-action="open-detail" data-episode="${escapeHtml(row.episode)}">查看</button></td></tr>`).join('')}</tbody></table>` : `<div class="empty-state"><strong>还没有批次队列</strong>选择视频目录与 背景音乐 目录后，开始一次可恢复的本地运行。</div>`}</div>
         <div class="panel"><div class="panel-head"><strong>运行日志</strong><small>${state.running ? '实时更新' : '保留最近一次会话'}</small></div><div class="log-box">${logs.length ? logs.map((item) => `<div class="log-line ${item.level === 'error' ? 'error' : item.level === 'success' ? 'success' : ''}">${escapeHtml(item.message)}</div>`).join('') : '<div class="log-line">等待批次开始…</div>'}</div></div>
       </div>
       <aside>
-        <div class="panel"><div class="panel-head"><strong>运行配置</strong><small>受控本地路径</small></div><div class="panel-body"><div class="path-stack">${videoConfigInput()}${configInput('music', '背景音乐', 'choose-music')}<div class="config-note"><strong>自动选曲</strong>按目录情绪、对白关键词和画面转场分段选曲；同类曲目优先选择较少使用者，不是随机。快速检查音轨可解码且不是静音，再按响度归一化。选曲依据对白情绪和场景转场。</div>${configInput('output', '输出', 'choose-output')}${configInput('transcripts', '字幕', 'choose-transcripts')}${state.bundledRuntime ? '' : configInput('modelPath', '模型', 'choose-model')}</div><div class="config-note"><strong>${model.exists ? '模型已就绪' : '模型未找到'}</strong> · ${escapeHtml(state.bundledRuntime ? '随应用内置' : shortPath(model.path || state.config.modelPath, 42))}<br>${model.exists ? `${formatBytes(model.sizeBytes)} · ${escapeHtml(state.config.language === 'auto' ? '自动识别' : state.config.language)} · 本机低精度处理` : '勾选本地转录后需要可用的模型目录'}</div><div class="switch-row"><div class="switch-label"><b>本地语音转录</b><small>生成转录文本与时间点，辅助情绪判断</small></div><label class="switch"><input type="checkbox" data-config-key="transcribe" ${state.config.transcribe ? 'checked' : ''}><span></span></label></div><div class="switch-row"><div class="switch-label"><b>对白时自动压低背景音乐</b><small>默认关闭；开启后仅在对白区间压低背景音乐。</small></div><label class="switch"><input type="checkbox" data-config-key="autoDuck" ${state.config.autoDuck ? 'checked' : ''}><span></span></label></div><div class="switch-row"><div class="switch-label"><b>允许覆盖已有结果</b><small>默认保护手工文件，恢复运行无需覆盖</small></div><label class="switch"><input type="checkbox" data-config-key="overwrite" ${state.config.overwrite ? 'checked' : ''}><span></span></label></div><div class="advanced-grid"><div class="field"><label>淡入时长</label><input class="number-input" data-config-key="fadeIn" type="number" min="0" step=".1" value="${escapeHtml(state.config.fadeIn)}"></div><div class="field"><label>淡出时长</label><input class="number-input" data-config-key="fadeOut" type="number" min="0" step=".1" value="${escapeHtml(state.config.fadeOut)}"></div><div class="field"><label>片尾定格（秒:帧）</label><input class="text-input" data-config-key="freezeTail" type="text" inputmode="numeric" placeholder="0:00" value="${escapeHtml(state.config.freezeTail)}"><small class="field-note">例：2:15 表示 2 秒 15 帧，按输入视频帧率换算</small></div></div></div></div>
+        <div class="panel"><div class="panel-head"><strong>运行配置</strong><small>受控本地路径</small></div><div class="panel-body"><div class="path-stack">${videoConfigInput()}${configInput('music', '背景音乐', 'choose-music')}<details class="config-details"><summary>自动选曲与音量处理</summary><p>参考曲目目录、对白情绪与场景转场分段选曲；优先使用较少播放的曲目，并跳过不可解码或近似静音的音频。</p></details>${configInput('output', '输出', 'choose-output')}${configInput('transcripts', '字幕', 'choose-transcripts')}${state.bundledRuntime ? '' : configInput('modelPath', '模型', 'choose-model')}</div><div class="config-note"><strong>${state.config.transcribe ? (model.exists ? '转录模型可访问' : '转录模型不可访问') : '本地转录未启用'}</strong> · ${escapeHtml(state.bundledRuntime ? '随应用内置' : shortPath(model.path || state.config.modelPath, 42))}<br>${model.exists ? `${formatBytes(model.sizeBytes)} · ${escapeHtml(state.config.language === 'auto' ? '自动识别' : state.config.language)} · 本机低精度处理` : '勾选本地转录后需要可用的模型目录'}</div><div class="switch-row"><div class="switch-label"><b>本地语音转录</b><small>生成转录文本与时间点，辅助情绪判断</small></div><label class="switch"><input type="checkbox" aria-label="本地语音转录" data-config-key="transcribe" ${state.config.transcribe ? 'checked' : ''}><span></span></label></div><div class="switch-row"><div class="switch-label"><b>对白时自动压低背景音乐</b><small>默认关闭；开启后仅在对白区间压低背景音乐。</small></div><label class="switch"><input type="checkbox" aria-label="对白时自动压低背景音乐" data-config-key="autoDuck" ${state.config.autoDuck ? 'checked' : ''}><span></span></label></div><div class="switch-row"><div class="switch-label"><b>允许覆盖已有结果</b><small>默认保护手工文件，恢复运行无需覆盖</small></div><label class="switch"><input type="checkbox" aria-label="允许覆盖已有结果" data-config-key="overwrite" ${state.config.overwrite ? 'checked' : ''}><span></span></label></div><details class="config-details"><summary>高级音频参数</summary><div class="advanced-grid"><div class="field"><label for="config-fadeIn">淡入时长</label><input id="config-fadeIn" class="number-input" data-config-key="fadeIn" type="number" min="0" step=".1" value="${escapeHtml(state.config.fadeIn)}"></div><div class="field"><label for="config-fadeOut">淡出时长</label><input id="config-fadeOut" class="number-input" data-config-key="fadeOut" type="number" min="0" step=".1" value="${escapeHtml(state.config.fadeOut)}"></div><div class="field"><label for="config-freezeTail">片尾定格（秒:帧）</label><input id="config-freezeTail" class="text-input" data-config-key="freezeTail" type="text" inputmode="numeric" placeholder="0:00" value="${escapeHtml(state.config.freezeTail)}"><small class="field-note">例：2:15 表示 2 秒 15 帧，按输入视频帧率换算</small></div></div></details></div></div>
         <div class="panel"><div class="panel-head"><strong>当前选集</strong><small>${current ? escapeHtml(current.episode) : '未选择'}</small></div><div class="panel-body">${current ? `<div class="inspector"><div class="inspector-card"><div class="inspector-row"><span>状态</span><b>${statusLabel(current.status)}</b></div><div class="inspector-row"><span>情绪</span><b>${escapeHtml(current.mood || '—')}</b></div><div class="inspector-row"><span>时长</span><b>${formatSeconds(current.duration)}</b></div></div><button class="button" data-action="open-timeline" data-episode="${escapeHtml(current.episode)}">打开 时间轴</button><button class="button ghost" data-action="open-transcript" data-episode="${escapeHtml(current.episode)}">打开 对白审阅</button></div>` : '<div class="empty-state">运行后可在这里检查单集产物。</div>'}</div></div>
       </aside>
     </div>
@@ -174,7 +175,7 @@ function renderSettings() {
     ['outputTimeline', '选曲时间轴（CSV）', '记录每段音乐、时间范围与选曲原因。'],
     ['outputTranscript', '转录文本（JSON）', '仅在开启本地转录时输出识别结果。'],
   ];
-  return `<section class="view"><div class="view-header"><div><h1>设置</h1></div></div><div class="layout-2"><div class="panel"><div class="panel-head"><strong>输出内容</strong><small>设置会保存在本机</small></div><div class="panel-body">${outputs.map(([key, label, note]) => `<div class="switch-row"><div class="switch-label"><b>${label}</b><small>${note}</small></div><label class="switch"><input type="checkbox" aria-label="${escapeHtml(label)}" data-config-key="${key}" ${state.config[key] ? 'checked' : ''}><span></span></label></div>`).join('')}<div class="config-note">取消勾选的类型不会生成；输出目录中已有的旧文件会保留，不会自动删除。</div></div></div><aside><div class="panel"><div class="panel-head"><strong>每集 BGM 片段上限</strong><small>默认 3 段，可自定义</small></div><div class="panel-body"><div class="field"><label for="config-maxTracksPerEpisode">每集最多配乐片段</label><input id="config-maxTracksPerEpisode" class="number-input" data-config-key="maxTracksPerEpisode" type="number" min="0" step="1" required value="${escapeHtml(state.config.maxTracksPerEpisode)}"><small class="field-note">明显转折时切歌，每段使用不同曲目；0 表示不限制，不会为用满上限强行加段。</small></div></div></div><div class="panel"><div class="panel-head"><strong>曲目衔接</strong><small>默认开启 · 1 秒</small></div><div class="panel-body"><div class="switch-row"><div class="switch-label"><b>切换曲目时淡入淡出</b><small>上一段淡出，同时让下一段淡入</small></div><label class="switch"><input type="checkbox" aria-label="切换曲目时淡入淡出" data-config-key="transitionFadeEnabled" ${state.config.transitionFadeEnabled ? 'checked' : ''}><span></span></label></div><div class="field"><label for="config-transitionFadeDuration">衔接时长（秒）</label><input id="config-transitionFadeDuration" class="number-input" data-config-key="transitionFadeDuration" type="number" min="0" step="0.1" required value="${escapeHtml(state.config.transitionFadeDuration)}" ${state.config.transitionFadeEnabled ? '' : 'disabled'}><small class="field-note">默认 1 秒；实际时长不会超过较短配乐片段的一半。</small></div></div></div><div class="panel"><div class="panel-head"><strong>常用操作</strong></div><div class="panel-body"><button class="button" data-action="new-batch">新建批次</button><button class="button ghost" data-action="open-path" data-path="${escapeHtml(state.config.output || '')}" ${state.config.output ? '' : 'disabled'}>打开输出目录</button><div class="config-note">最大化时按窗口尺寸等比例放大界面，还原后恢复默认缩放。</div></div></div></aside></div></section>`;
+  return `<section class="view"><div class="view-header"><div><h1>设置</h1></div></div><div class="layout-2"><div class="panel"><div class="panel-head"><strong>输出内容</strong><small>设置会保存在本机</small></div><div class="panel-body">${outputs.map(([key, label, note]) => `<div class="switch-row"><div class="switch-label"><b>${label}</b><small>${note}</small></div><label class="switch"><input type="checkbox" aria-label="${escapeHtml(label)}" data-config-key="${key}" ${state.config[key] ? 'checked' : ''}><span></span></label></div>`).join('')}<div class="config-note">未勾选的类型不会生成；非本程序文件默认拒绝覆盖。开启“允许覆盖已有结果”后，已有文件可能被替换。</div></div></div><aside><div class="panel"><div class="panel-head"><strong>每集 BGM 片段上限</strong><small>当前：${state.config.maxTracksPerEpisode === 0 ? '不限制' : `${state.config.maxTracksPerEpisode} 段`}</small></div><div class="panel-body"><div class="field"><label for="config-maxTracksPerEpisode">每集最多配乐片段</label><input id="config-maxTracksPerEpisode" class="number-input" data-config-key="maxTracksPerEpisode" type="number" min="0" step="1" required value="${escapeHtml(state.config.maxTracksPerEpisode)}"><small class="field-note">0 表示不限制片段数。</small><details class="field-help"><summary>选曲方式</summary><p>仅在对白情绪明显转变时切歌，每段使用不同曲目；不会为用满上限强行加段。</p></details></div></div></div><div class="panel"><div class="panel-head"><strong>曲目衔接</strong><small>${state.config.transitionFadeEnabled ? '已开启' : '已关闭'}</small></div><div class="panel-body"><div class="switch-row"><div class="switch-label"><b>切换曲目时淡入淡出</b><small>上一段淡出，同时让下一段淡入</small></div><label class="switch"><input type="checkbox" aria-label="切换曲目时淡入淡出" data-config-key="transitionFadeEnabled" ${state.config.transitionFadeEnabled ? 'checked' : ''}><span></span></label></div><div class="field"><label for="config-transitionFadeDuration">衔接时长（秒）</label><input id="config-transitionFadeDuration" class="number-input" data-config-key="transitionFadeDuration" type="number" min="0" step="0.1" required value="${escapeHtml(state.config.transitionFadeDuration)}" ${state.config.transitionFadeEnabled ? '' : 'disabled'}><small class="field-note">衔接时长不超过较短配乐片段的一半。</small></div></div></div><div class="panel"><div class="panel-head"><strong>常用操作</strong></div><div class="panel-body"><button class="button ghost" data-action="open-path" data-path="${escapeHtml(state.config.output || '')}" ${state.config.output ? '' : 'disabled'}>打开输出目录</button></div></div></aside></div></section>`;
 }
 
 function renderAbout() {
@@ -230,13 +231,24 @@ function renderTranscript() {
 
 function render(preserveScroll = false) {
   const scrollTop = screen.scrollTop;
+  const transcriptScrollTop = screen.querySelector('.transcript-scroll')?.scrollTop;
+  const focused = screen.contains(document.activeElement) ? document.activeElement : null;
+  const focusId = focused?.id;
+  const focusKey = focused?.dataset.configKey;
+  const focusAction = focused?.dataset.action;
+  const focusData = focused?.dataset || {};
   const viewTitle = ({ desk: '批次控制台', timeline: '时间轴', transcript: '对白审阅', settings: '设置', about: '关于' })[state.view];
   topTitle.textContent = viewTitle;
   topStart.textContent = state.running ? '停止批次' : '开始批次';
   topStart.dataset.action = state.running ? 'stop' : 'start';
   topStart.classList.toggle('primary', !state.running);
   topStart.classList.toggle('warn', state.running);
-  topStart.disabled = state.view !== 'desk' && !state.running && !state.config.videos;
+  topStart.hidden = state.view !== 'desk' && !state.running;
+  const paths = state.data.paths || {};
+  const outputsReady = [state.config.outputAudio, state.config.outputVideo, state.config.outputTimeline].some(Boolean) || (state.config.outputTranscript && state.config.transcribe);
+  const pathsReady = ['videos', 'music', 'output'].every((key) => paths[key]?.status === 'available');
+  topStart.disabled = !state.running && (!pathsReady || Boolean(state.data.warning) || (state.config.transcribe && !state.data.model?.exists) || !outputsReady);
+  topStart.title = topStart.disabled ? (state.data.warning || '请检查目录、转录模型和输出设置') : '';
   document.querySelectorAll('.nav-item').forEach((item) => item.classList.toggle('active', item.dataset.view === state.view));
   sidebarRuntime.textContent = state.running ? '批次运行中 · 可中断' : state.data.rows.length ? '已读取上次批次状态' : '离线链路待启动';
   screen.innerHTML = ({ desk: renderDesk, timeline: renderTimeline, transcript: renderTranscript, settings: renderSettings, about: renderAbout })[state.view]?.() || renderDesk();
@@ -249,6 +261,9 @@ function render(preserveScroll = false) {
     if (status) status.hidden = false;
   });
   if (preserveScroll) screen.scrollTop = scrollTop;
+  if (transcriptScrollTop !== undefined) screen.querySelector('.transcript-scroll')?.scrollTo(0, transcriptScrollTop);
+  const focusTarget = focusId ? document.getElementById(focusId) : focusKey ? [...screen.querySelectorAll('[data-config-key]')].find((item) => item.dataset.configKey === focusKey) : focusAction ? [...screen.querySelectorAll('[data-action]')].find((item) => item.dataset.action === focusAction && item.dataset.episode === focusData.episode && item.dataset.index === focusData.index && item.dataset.view === focusData.view) : null;
+  focusTarget?.focus({ preventScroll: true });
 }
 
 async function startBatch() {
@@ -398,7 +413,8 @@ document.addEventListener('change', (event) => {
   const key = input.dataset.configKey;
   state.config[key] = input.type === 'checkbox' ? input.checked : (['duckDb', 'fadeIn', 'fadeOut', 'transitionFadeDuration', 'maxTracksPerEpisode'].includes(key) ? (input.value === '' ? '' : Number(input.value)) : input.value);
   saveConfig();
-  if (key === 'transitionFadeEnabled') render(true);
+  if (['videos', 'music', 'output', 'modelPath', 'transcribe'].includes(key)) refresh(true);
+  else render(true);
 });
 document.addEventListener('input', (event) => {
   const input = event.target.closest('[data-config-key]');

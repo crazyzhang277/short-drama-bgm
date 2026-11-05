@@ -1,10 +1,11 @@
 'use strict';
 
 const fs = require('node:fs/promises');
+const { constants: fsConstants } = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { pathToFileURL } = require('node:url');
-const { DEFAULT_TRANSITION_FADE_SECONDS, runBatch, scanMusic, scanVideos } = require('../../src/mvp');
+const { DEFAULT_TRANSITION_FADE_SECONDS, VIDEO_EXTENSIONS, runBatch, scanMusic, scanVideos } = require('../../src/mvp');
 
 const DEFAULTS = {
   videos: '',
@@ -28,6 +29,40 @@ let activeRun = null;
 
 async function exists(filePath) {
   try { await fs.access(filePath); return true; } catch { return false; }
+}
+
+async function inspectPath(value, kind) {
+  const target = cleanPath(value);
+  if (!target) return { status: 'unset', label: '\u672a\u8bbe\u7f6e' };
+
+  let stat;
+  try { stat = await fs.stat(target); } catch (error) {
+    if (kind !== 'output' || error.code !== 'ENOENT') return { status: 'unavailable', label: '\u4e0d\u53ef\u8bbf\u95ee' };
+    let parent = path.dirname(path.resolve(target));
+    while (true) {
+      try {
+        const parentStat = await fs.stat(parent);
+        if (!parentStat.isDirectory()) return { status: 'unavailable', label: '\u4e0d\u53ef\u8bbf\u95ee' };
+        await fs.access(parent, fsConstants.W_OK);
+        return { status: 'available', label: '\u53ef\u521b\u5efa' };
+      } catch (parentError) {
+        if (parentError.code !== 'ENOENT') return { status: 'unavailable', label: '\u4e0d\u53ef\u8bbf\u95ee' };
+        const next = path.dirname(parent);
+        if (next === parent) return { status: 'unavailable', label: '\u4e0d\u53ef\u8bbf\u95ee' };
+        parent = next;
+      }
+    }
+  }
+
+  if (kind === 'videos' ? !(stat.isDirectory() || (stat.isFile() && VIDEO_EXTENSIONS.has(path.extname(target).toLowerCase()))) : !stat.isDirectory()) {
+    return { status: 'unavailable', label: '\u4e0d\u53ef\u8bbf\u95ee' };
+  }
+  try {
+    await fs.access(target, kind === 'output' ? fsConstants.W_OK : fsConstants.R_OK);
+    return { status: 'available', label: '\u53ef\u7528' };
+  } catch {
+    return { status: 'unavailable', label: '\u4e0d\u53ef\u8bbf\u95ee' };
+  }
 }
 
 async function readJson(filePath, fallback = null) {
@@ -72,19 +107,20 @@ async function assertRunConfig(input, runtime = {}) {
 }
 
 async function modelInfo(modelPath) {
-  const info = { path: modelPath, exists: await exists(modelPath), sizeBytes: 0 };
-  if (!info.exists) return info;
+  const info = { path: modelPath, exists: false, sizeBytes: 0 };
   try {
+    if (!(await fs.stat(modelPath)).isDirectory()) return info;
+    await fs.access(modelPath, fsConstants.R_OK);
     const files = await fs.readdir(modelPath, { withFileTypes: true, recursive: true });
     const sizes = await Promise.all(files.filter((entry) => entry.isFile()).map(async (entry) => {
       const filePath = path.join(entry.parentPath || modelPath, entry.name);
       return (await fs.stat(filePath)).size;
     }));
     info.sizeBytes = sizes.reduce((total, size) => total + size, 0);
+    info.exists = sizes.length > 0 && info.sizeBytes > 0;
   } catch { info.sizeBytes = 0; }
   return info;
 }
-
 function summaryByEpisode(summary) {
   const map = new Map();
   for (const item of summary?.results || []) map.set(item.episode, item);
@@ -96,6 +132,11 @@ function stateEpisodes(state) { return state?.episodes && typeof state.episodes 
 async function inspectBatch(input = {}) {
   const config = { ...DEFAULTS, ...input };
   const output = cleanPath(config.output);
+  const paths = {
+    videos: await inspectPath(config.videos, 'videos'),
+    music: await inspectPath(config.music, 'music'),
+    output: await inspectPath(output, 'output'),
+  };
   const state = output ? await readJson(path.join(output, '.mvp-state.json'), { episodes: {} }) : { episodes: {} };
   const summary = output ? await readJson(path.join(output, 'run-summary.json'), null) : null;
   let videos = [];
@@ -123,7 +164,7 @@ async function inspectBatch(input = {}) {
   });
   let musicGroups = [];
   if (cleanPath(config.music)) try { const groups = await scanMusic(cleanPath(config.music)); musicGroups = [...groups.entries()].map(([mood, tracks]) => ({ mood, count: tracks.length })); } catch (error) { warning ||= error.message; }
-  return { config: { ...config, output }, state, summary, rows, warning, active: Boolean(activeRun), model: await modelInfo(cleanPath(config.modelPath) || DEFAULTS.modelPath), musicGroups };
+  return { config: { ...config, output }, state, summary, rows, warning, active: Boolean(activeRun), model: await modelInfo(cleanPath(config.modelPath) || DEFAULTS.modelPath), musicGroups, paths };
 }
 
 function parseCsvLine(line) {

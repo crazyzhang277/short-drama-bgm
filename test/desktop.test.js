@@ -33,6 +33,32 @@ test('desktop batch service reads queue and links timeline/transcript artifacts'
 });
 
 
+test('desktop preflight distinguishes unset, available, creatable, and invalid paths', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bgm-desktop-preflight-'));
+  const videos = path.join(root, 'single.mp4');
+  const music = path.join(root, 'music');
+  const output = path.join(root, 'new-output');
+  const wrongType = path.join(root, 'not-a-directory.txt');
+  await Promise.all([fs.mkdir(music), fs.writeFile(videos, 'placeholder'), fs.writeFile(wrongType, 'placeholder')]);
+
+  const available = await inspectBatch({ videos, music, output });
+  assert.deepEqual(available.paths.videos, { status: 'available', label: '\u53ef\u7528' });
+  assert.deepEqual(available.paths.music, { status: 'available', label: '\u53ef\u7528' });
+  assert.deepEqual(available.paths.output, { status: 'available', label: '\u53ef\u521b\u5efa' });
+  await assert.rejects(fs.stat(output), { code: 'ENOENT' });
+
+  const invalid = await inspectBatch({ videos: wrongType, music: wrongType, output: wrongType, modelPath: wrongType });
+  assert.equal(invalid.paths.videos.status, 'unavailable');
+  assert.equal(invalid.paths.music.status, 'unavailable');
+  assert.equal(invalid.paths.output.status, 'unavailable');
+  assert.equal(invalid.model.exists, false);
+
+  const unset = await inspectBatch({ videos: '', music: '', output: '' });
+  assert.equal(unset.paths.videos.status, 'unset');
+  assert.equal(unset.paths.music.status, 'unset');
+  assert.equal(unset.paths.output.status, 'unset');
+});
+
 test('desktop batch service can stop a queued run before rendering', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bgm-desktop-stop-'));
   const videos = path.join(root, 'videos');
