@@ -422,6 +422,14 @@ test('batch MVP renders Chinese paths, ducking, validation, and resume', async (
   assert.equal(second.failed, 0);
   assert.equal(second.skipped, 2);
 
+  const changedButSkipped = await runBatch({ ...options, fadeIn: 0.8, skipCompleted: true }, { log() {}, error() {} });
+  assert.equal(changedButSkipped.failed, 0);
+  assert.equal(changedButSkipped.skipped, 2);
+
+  const rerun = await runBatch({ ...options, fadeIn: 0.8, skipCompleted: false }, { log() {}, error() {} });
+  assert.equal(rerun.failed, 0);
+  assert.equal(rerun.completed, 2);
+
   const selectionOnly = await runBatch({ ...options, outputAudio: false, outputVideo: false, outputTimeline: true, outputTranscript: false }, { log() {}, error() {} });
   assert.equal(selectionOnly.skipped, 2);
   let selectionState = JSON.parse(await fs.readFile(path.join(outputDir, '.mvp-state.json'), 'utf8'));
@@ -439,9 +447,9 @@ test('batch MVP renders Chinese paths, ducking, validation, and resume', async (
   assert.equal(recoveredOutput.skipped, 1);
 
   await fs.writeFile(path.join(transcriptDir, '第2集.json'), JSON.stringify({ segments: [] }), 'utf8');
-  const changedTranscript = await runBatch(options, { log() {}, error() {} });
-  assert.equal(changedTranscript.completed, 1);
-  assert.equal(changedTranscript.skipped, 1);
+  const changedTranscript = await runBatch({ ...options, skipCompleted: false }, { log() {}, error() {} });
+  assert.equal(changedTranscript.completed, 2);
+  assert.equal(changedTranscript.skipped, 0);
   assert.equal(changedTranscript.results.find((item) => item.episode === '第2集').mood, '默认');
   assert.match(await fs.readFile(csv, 'utf8'), /,-10,\[\],0:00,0\n/);
   await fs.writeFile(finalVideo, 'broken final output', 'utf8');
@@ -558,7 +566,7 @@ test('saves transcript text and timestamps when transcription is enabled', async
 
   const updatedSegments = [{ start: 0.6, end: 1.1, text: 'She slapped me.' }];
   await fs.writeFile(path.join(transcriptDir, '样片.json'), JSON.stringify({ segments: updatedSegments }), 'utf8');
-  assert.equal((await runBatch(options, { log() {}, error() {} })).completed, 1);
+  assert.equal((await runBatch({ ...options, skipCompleted: false }, { log() {}, error() {} })).completed, 1);
   assert.deepEqual(JSON.parse(await fs.readFile(transcriptPath, 'utf8')).segments, updatedSegments);
 
   await fs.unlink(transcriptPath);

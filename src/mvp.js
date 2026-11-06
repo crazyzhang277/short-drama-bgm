@@ -809,7 +809,7 @@ async function renderEpisode({ videoPath, outputDir, groups, state, options, cat
     }
 
     const transcriptOutputValid = !selectedOutputs.outputTranscript || !transcriptRequired || (ownsAsrTranscript && await pathExists(asrTranscriptPath));
-    if (!options.overwrite && existing?.status === 'completed' && existing.signature === signature &&
+    if (!options.overwrite && options.skipCompleted !== false && existing?.status === 'completed' &&
       (!selectedOutputs.outputAudio || (existing.outputPath === outputPath && await outputIsValid(outputPath, musicDuration, options.ffprobe, options.ffmpeg, options.signal))) &&
       (!selectedOutputs.outputVideo || (existing.finalVideoPath === finalVideoPath && await finalVideoIsValid(finalVideoPath, probe.duration, options.ffprobe, options.ffmpeg, options.signal))) &&
       (!selectedOutputs.outputTimeline || (existing.timelinePath === timelinePath && await pathExists(timelinePath))) && transcriptOutputValid) {
