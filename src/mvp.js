@@ -746,7 +746,7 @@ async function removeIfExists(filePath) {
   }
 }
 
-async function renderEpisode({ videoPath, outputDir, groups, state, options, catalogSignature }) {
+async function renderEpisode({ videoPath, outputDir, groups, state, options, catalogSignature, onProcessing }) {
   const episode = path.parse(videoPath).name;
   const outputPath = path.join(outputDir, episode + '_bgm.wav');
   const timelinePath = path.join(outputDir, episode + '_timeline.csv');
@@ -776,40 +776,14 @@ async function renderEpisode({ videoPath, outputDir, groups, state, options, cat
     const freezeTailSeconds = freezeTailDuration(options.freezeTail, probe.frameRate);
     if (freezeTailSeconds >= probe.duration) throw new Error('片尾定格时长必须小于视频总时长');
     const musicDuration = probe.duration - freezeTailSeconds;
-    const transcript = await findTranscript(videoPath, options.transcripts, probe.duration);
-    const transcriptStat = transcript ? await fs.stat(transcript.path) : null;
     const transcriptRequired = Boolean(options.transcribe && probe.hasAudio);
     const ownsAsrTranscript = existing?.transcriptPath === asrTranscriptPath;
-    const transcriptionModel = options.transcribe ? (options.modelPath || process.env.FASTER_WHISPER_MODEL || 'small') : null;
-    const transcriptionLanguage = options.transcribe ? (options.language || process.env.FASTER_WHISPER_LANGUAGE || 'auto') : null;
-    const signature = createHash('sha256').update(JSON.stringify({
-      version: STATE_VERSION,
-      finalVideo: true,
-      sourceSize: sourceStat.size,
-      sourceMtimeMs: sourceStat.mtimeMs,
-      catalogSignature,
-      mood: options.mood,
-      minTracksPerEpisode: options.minTracksPerEpisode,
-      transcribe: options.transcribe,
-      transcriptionModel,
-      transcriptionLanguage,
-      transcript: transcriptStat && [transcript.path, transcriptStat.size, transcriptStat.mtimeMs],
-      duckDb: options.duckDb,
-      autoDuck: options.autoDuck,
-      freezeTail: options.freezeTail || '0:00',
-      maxTracksPerEpisode: options.maxTracksPerEpisode > 0 ? options.maxTracksPerEpisode : undefined,
-      fadeIn: options.fadeIn,
-      fadeOut: options.fadeOut,
-      transitionFadeEnabled: options.transitionFadeEnabled !== false,
-      transitionFadeDuration: transitionFadeSeconds(options),
-    })).digest('hex');
-
     if (!options.overwrite && selectedOutputs.outputTranscript && transcriptRequired && await pathExists(asrTranscriptPath) && !ownsAsrTranscript) {
       throw new Error('转录输出已存在，拒绝覆盖非本程序创建的文件: ' + asrTranscriptPath);
     }
 
     const transcriptOutputValid = !selectedOutputs.outputTranscript || !transcriptRequired || (ownsAsrTranscript && await pathExists(asrTranscriptPath));
-    if (!options.overwrite && options.skipCompleted !== false && existing?.status === 'completed' &&
+    if (options.skipCompleted !== false && existing?.status === 'completed' &&
       (!selectedOutputs.outputAudio || (existing.outputPath === outputPath && await outputIsValid(outputPath, musicDuration, options.ffprobe, options.ffmpeg, options.signal))) &&
       (!selectedOutputs.outputVideo || (existing.finalVideoPath === finalVideoPath && await finalVideoIsValid(finalVideoPath, probe.duration, options.ffprobe, options.ffmpeg, options.signal))) &&
       (!selectedOutputs.outputTimeline || (existing.timelinePath === timelinePath && await pathExists(timelinePath))) && transcriptOutputValid) {
@@ -841,6 +815,33 @@ async function renderEpisode({ videoPath, outputDir, groups, state, options, cat
     if (!options.overwrite && (outputExists && !ownsOutput || timelineExists && !ownsTimeline || finalVideoExists && !ownsFinalVideo)) {
       throw new Error('输出已存在，若要覆盖请加 --overwrite: ' + episode);
     }
+
+    onProcessing?.();
+    const transcript = await findTranscript(videoPath, options.transcripts, probe.duration);
+    const transcriptStat = transcript ? await fs.stat(transcript.path) : null;
+    const transcriptionModel = options.transcribe ? (options.modelPath || process.env.FASTER_WHISPER_MODEL || 'small') : null;
+    const transcriptionLanguage = options.transcribe ? (options.language || process.env.FASTER_WHISPER_LANGUAGE || 'auto') : null;
+    const signature = createHash('sha256').update(JSON.stringify({
+      version: STATE_VERSION,
+      finalVideo: true,
+      sourceSize: sourceStat.size,
+      sourceMtimeMs: sourceStat.mtimeMs,
+      catalogSignature,
+      mood: options.mood,
+      minTracksPerEpisode: options.minTracksPerEpisode,
+      transcribe: options.transcribe,
+      transcriptionModel,
+      transcriptionLanguage,
+      transcript: transcriptStat && [transcript.path, transcriptStat.size, transcriptStat.mtimeMs],
+      duckDb: options.duckDb,
+      autoDuck: options.autoDuck,
+      freezeTail: options.freezeTail || '0:00',
+      maxTracksPerEpisode: options.maxTracksPerEpisode > 0 ? options.maxTracksPerEpisode : undefined,
+      fadeIn: options.fadeIn,
+      fadeOut: options.fadeOut,
+      transitionFadeEnabled: options.transitionFadeEnabled !== false,
+      transitionFadeDuration: transitionFadeSeconds(options),
+    })).digest('hex');
 
     state.episodes[stateKey] = {
       ...existing, episode, status: 'processing', signature, sourceSize: sourceStat.size, sourceMtimeMs: sourceStat.mtimeMs,
@@ -983,10 +984,23 @@ async function runBatch(options, logger = console) {
   for (let index = 0; index < videos.length; index += 1) {
     const videoPath = videos[index];
     const progress = { index: index + 1, total: videos.length, episode: path.parse(videoPath).name, videoPath };
-    logger.progress?.({ ...progress, status: 'processing' });
-    logger.log('[' + (index + 1) + '/' + videos.length + '] ' + path.basename(videoPath));
+    const checkingCompleted = options.skipCompleted !== false && state.episodes[normalizePath(videoPath)]?.status === 'completed';
+    if (checkingCompleted) {
+      logger.progress?.({ ...progress, status: 'checking' });
+      logger.log('[' + (index + 1) + '/' + videos.length + '] 核验已完成产物：' + path.basename(videoPath));
+    } else {
+      logger.progress?.({ ...progress, status: 'processing' });
+      logger.log('[' + (index + 1) + '/' + videos.length + '] ' + path.basename(videoPath));
+    }
     try {
-      const result = await renderEpisode({ videoPath, outputDir: outputPath, groups, state, options, catalogSignature });
+      const result = await renderEpisode({
+        videoPath, outputDir: outputPath, groups, state, options, catalogSignature,
+        onProcessing() {
+          if (!checkingCompleted) return;
+          logger.progress?.({ ...progress, status: 'processing' });
+          logger.log('[' + (index + 1) + '/' + videos.length + '] ' + path.basename(videoPath));
+        },
+      });
       results.push(result);
       logger.progress?.({ ...progress, ...result });
       logger.log('  ' + result.status + ': ' + result.outputPath);

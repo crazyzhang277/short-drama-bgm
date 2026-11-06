@@ -41,11 +41,11 @@ function formatBytes(value) {
 }
 
 function statusLabel(status) {
-  return ({ completed: '已完成', skipped: '已跳过', processing: '处理中', failed: '失败', interrupted: '已中断', pending: '待处理' })[status] || status || '待处理';
+  return ({ completed: '已完成', skipped: '已跳过', checking: '核验产物中', processing: '处理中', failed: '失败', interrupted: '已中断', pending: '待处理' })[status] || status || '待处理';
 }
 
 function statusClass(status) {
-  return ['completed', 'skipped', 'processing', 'failed', 'interrupted', 'pending'].includes(status) ? status : 'pending';
+  return status === 'checking' ? 'processing' : ['completed', 'skipped', 'processing', 'failed', 'interrupted', 'pending'].includes(status) ? status : 'pending';
 }
 
 function artifactSummary(row) {
@@ -145,7 +145,7 @@ function renderDesk() {
   const skipped = rows.length ? rows.filter((row) => row.status === 'skipped').length : actualSkipped;
   const failed = rows.length ? rows.filter((row) => row.status === 'failed' || row.status === 'interrupted').length : Math.max(0, Number(summary.failed) || 0) + Math.max(0, Number(summary.interrupted) || 0);
   const total = rows.length || Number(summary.videos) || 0;
-  const processing = rows.filter((row) => row.status === 'processing').length;
+  const processing = rows.filter((row) => row.status === 'processing' || row.status === 'checking').length;
   const pending = Math.max(0, total - completed - skipped - failed - processing);
   const model = state.data.model || {};
   const paths = state.data.paths || {};

@@ -418,17 +418,29 @@ test('batch MVP renders Chinese paths, ducking, validation, and resume', async (
   await execFileAsync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-i', finalVideo, '-vn', '-c:a', 'pcm_s16le', '-ar', '48000', '-ac', '2', mixedWav], { windowsHide: true });
   assert.ok(await wavRms(mixedWav, 1.3, 1.6) > await wavRms(wav, 1.3, 1.6) * 1.15, 'final video should retain original audio in addition to BGM');
 
-  const second = await runBatch(options, { log() {}, error() {} });
+  const secondProgress = [];
+  const second = await runBatch(options, { log() {}, error() {}, progress(event) { secondProgress.push(event); } });
   assert.equal(second.failed, 0);
   assert.equal(second.skipped, 2);
+  assert.equal(secondProgress.filter((event) => event.status === 'checking').length, 2);
+  assert.equal(secondProgress.some((event) => event.status === 'processing'), false);
+  assert.deepEqual(secondProgress.filter((event) => event.episode).map(({ episode, status }) => [episode, status]), [
+    ['第2集', 'checking'], ['第2集', 'skipped'], ['第10集', 'checking'], ['第10集', 'skipped'],
+  ]);
+
+  const overwriteButSkip = await runBatch({ ...options, overwrite: true, skipCompleted: true }, { log() {}, error() {} });
+  assert.equal(overwriteButSkip.failed, 0);
+  assert.equal(overwriteButSkip.skipped, 2);
 
   const changedButSkipped = await runBatch({ ...options, fadeIn: 0.8, skipCompleted: true }, { log() {}, error() {} });
   assert.equal(changedButSkipped.failed, 0);
   assert.equal(changedButSkipped.skipped, 2);
 
-  const rerun = await runBatch({ ...options, fadeIn: 0.8, skipCompleted: false }, { log() {}, error() {} });
+  const rerunProgress = [];
+  const rerun = await runBatch({ ...options, fadeIn: 0.8, skipCompleted: false }, { log() {}, error() {}, progress(event) { rerunProgress.push(event); } });
   assert.equal(rerun.failed, 0);
   assert.equal(rerun.completed, 2);
+  assert.equal(rerunProgress.filter((event) => event.status === 'processing').length, 2);
 
   const selectionOnly = await runBatch({ ...options, outputAudio: false, outputVideo: false, outputTimeline: true, outputTranscript: false }, { log() {}, error() {} });
   assert.equal(selectionOnly.skipped, 2);
@@ -441,10 +453,14 @@ test('batch MVP renders Chinese paths, ducking, validation, and resume', async (
   assert.equal((await runBatch(options, { log() {}, error() {} })).skipped, 2);
 
   await makeSilentWav(path.join(outputDir, '第10集_bgm.wav'), 2.5);
-  const recoveredOutput = await runBatch(options, { log() {}, error() {} });
+  const recoveredProgress = [];
+  const recoveredOutput = await runBatch(options, { log() {}, error() {}, progress(event) { recoveredProgress.push(event); } });
   assert.equal(recoveredOutput.failed, 0);
   assert.equal(recoveredOutput.completed, 1);
   assert.equal(recoveredOutput.skipped, 1);
+  assert.deepEqual(recoveredProgress.filter((event) => event.episode).map(({ episode, status }) => [episode, status]), [
+    ['第2集', 'checking'], ['第2集', 'skipped'], ['第10集', 'checking'], ['第10集', 'processing'], ['第10集', 'completed'],
+  ]);
 
   await fs.writeFile(path.join(transcriptDir, '第2集.json'), JSON.stringify({ segments: [] }), 'utf8');
   const changedTranscript = await runBatch({ ...options, skipCompleted: false }, { log() {}, error() {} });
