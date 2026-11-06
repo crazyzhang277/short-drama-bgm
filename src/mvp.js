@@ -8,19 +8,19 @@ const { createHash } = require('node:crypto');
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.mkv', '.webm', '.avi', '.m4v']);
 const AUDIO_EXTENSIONS = new Set(['.wav', '.mp3', '.m4a', '.aac', '.flac', '.ogg', '.opus']);
 const DEFAULT_MOOD = '默认';
-const STATE_VERSION = 12;
+const STATE_VERSION = 13;
 
 const MOOD_RULES = [
-  { mood: '紧张', words: ['危险', '追杀', '逃跑', '快跑', '小心', '冲突', '打架', '绑架', '枪', '杀', 'danger', 'chase', 'run away', 'hurry', 'careful', 'kidnap', 'kidnapped', 'gun', 'kill', 'killed', 'fight', 'fighting'] },
-  { mood: '愤怒', words: ['愤怒', '怒火', '压迫', '反派', '威胁', '逼迫', '仇恨', '报复', 'angry', 'rage', 'threat', 'threaten', 'pressure', 'revenge', 'hate', 'bully', 'bullying', 'slap', 'slapped', 'humiliate', 'cruel', 'cruelty', 'hit me', 'told us to get out'] },
-  { mood: '悬疑', words: ['秘密', '线索', '调查', '监控', '真相', '发现', '证据', '怀疑', '凶手', '跟踪', 'secret', 'clue', 'investigate', 'investigation', 'monitor', 'truth', 'evidence', 'suspect', 'killer', 'follow', 'rumor', 'rumour'] },
-  { mood: '爽感', words: ['打脸', '反击', '报复', '赢了', '闭嘴', '滚', '道歉', '胜利', '反转', 'fight back', 'hit back', 'shut up', 'get out', 'apologize', 'apology', 'winner', 'victory', 'stand up', 'dare'] },
-  { mood: '欢快', words: ['开心', '高兴', '欢乐', '轻松', '活泼', '笑', '庆祝', 'happy', 'cheerful', 'fun', 'laugh', 'laughing', 'celebrate', 'celebration', 'smile'] },
-  { mood: '浪漫', words: ['爱', '喜欢', '恋爱', '浪漫', '心动', '告白', '吻', '婚礼', 'love', 'loves', 'romance', 'romantic', 'kiss', 'wedding', 'marry', 'married', 'wife', 'husband'] },
-  { mood: '励志', words: ['梦想', '努力', '坚持', '成长', '成功', '希望', '加油', 'dream', 'work hard', 'keep going', 'growth', 'success', 'successful', 'hope', 'courage', 'support'] },
-  { mood: '伤感', words: ['伤心', '难过', '哭', '眼泪', '离开', '失去', '对不起', '遗憾', '心痛', 'sad', 'sadness', 'sorry', 'cry', 'crying', 'tears', 'leave', 'left', 'lost', 'loss', 'regret', 'heartbroken', 'pain', 'stay for a couple of days', 'find a place'] },
-  { mood: '温情', words: ['谢谢', '家人', '妈妈', '爸爸', '拥抱', '爱你', '温柔', '陪着', '回家', 'thank', 'thanks', 'family', 'mother', 'mom', 'father', 'dad', 'grandpa', 'grandmother', 'hug', 'gentle', 'stay with', 'go home', 'care', 'will you still come', 'we will', 'neither of you is going anywhere', 'not making us leave', 'stuck with me', 'real home', 'eat up', "nobody's holding back"] },
-  { mood: '忧郁', words: ['阴暗', '神秘', '诡异', '沉重', '孤独', 'dark', 'strange', 'lonely', 'heavy', 'gloomy', 'mysterious', 'mystery'] },
+  { mood: '紧张', words: ['危险', '追杀', '逃跑', '快跑', '小心', '冲突', '打架', '绑架', '枪', '杀', '来不及', '怎么办', '救命', '别过来', 'danger', 'chase', 'run away', 'hurry', 'hurry up', 'careful', 'kidnap', 'kidnapped', 'gun', 'kill', 'killed', 'fight', 'fighting', "we're running out of time", 'what do we do', "don't come", "i'm scared", "i'm afraid", 'please help', 'help me', 'get out of here', 'we have to go', "they're coming", "we're trapped"] },
+  { mood: '愤怒', words: ['愤怒', '怒火', '压迫', '反派', '威胁', '逼迫', '仇恨', '报复', '受够了', '别逼我', '无法原谅', '你竟敢', '怎么敢', 'angry', 'rage', 'threat', 'threaten', 'pressure', 'revenge', 'hate', 'bully', 'bullying', 'slap', 'slapped', 'humiliate', 'cruel', 'cruelty', 'hit me', 'told us to get out', "i've had enough", 'unforgivable', 'how dare', "how could you", 'you betrayed me', 'you lied to me', 'leave me alone', 'you have no right', "it's your fault", "i can't believe you"] },
+  { mood: '悬疑', words: ['秘密', '线索', '调查', '监控', '真相', '发现', '证据', '怀疑', '凶手', '跟踪', 'secret', 'clue', 'investigate', 'investigation', 'monitor', 'truth', 'evidence', 'suspect', 'killer', 'follow', 'rumor', 'rumour', "something's wrong", 'what happened', 'who did this', "what's going on", "it doesn't make sense", 'bad feeling', 'we need to find out'] },
+  { mood: '爽感', words: ['打脸', '反击', '报复', '赢了', '闭嘴', '滚', '道歉', '胜利', '反转', 'fight back', 'hit back', 'shut up', 'get out', 'apologize', 'apology', 'winner', 'victory', 'stand up', 'dare', 'we did it', 'we won', 'i won', 'finally', 'you lose', 'in your face', 'you got what you deserved', "that's what you get"] },
+  { mood: '欢快', words: ['开心', '高兴', '欢乐', '轻松', '活泼', '笑', '庆祝', '太好了', '好开心', '笑死', 'happy', 'cheerful', 'fun', 'laugh', 'laughing', 'celebrate', 'celebration', 'smile', "that's great", 'so happy', "i'm so happy", 'this is amazing', 'great news', "we're safe", 'we made it', 'good news', "can't stop laughing"] },
+  { mood: '浪漫', words: ['爱', '喜欢', '恋爱', '浪漫', '心动', '告白', '吻', '婚礼', '想和你', '只爱你', '心里只有', 'love', 'loves', 'romance', 'romantic', 'kiss', 'wedding', 'marry', 'married', 'wife', 'husband', 'i love you', 'i want to be with', 'you are mine', 'you mean everything to me', 'you are my world', 'will you marry me'] },
+  { mood: '励志', words: ['梦想', '努力', '坚持', '成长', '成功', '希望', '加油', '不能放弃', '一定要', '相信自己', 'dream', 'work hard', 'keep going', 'growth', 'success', 'successful', 'hope', 'courage', 'support', "won't give up", 'i can do', 'i can do this', 'we can do this', 'keep fighting', 'believe in yourself', 'you can do it', "we'll get through this"] },
+  { mood: '伤感', words: ['伤心', '难过', '哭', '眼泪', '离开', '失去', '对不起', '遗憾', '心痛', '不想离开', '再也见不到', '无法挽回', 'sad', 'sadness', 'sorry', 'cry', 'crying', 'tears', 'leave', 'left', 'lost', 'loss', 'regret', 'heartbroken', 'pain', 'stay for a couple of days', 'find a place', "can't let go", 'never see again', "it's over", 'goodbye', 'i lost you', 'you left me', "i can't go on", 'nothing will ever be the same', 'i wish you were here'] },
+  { mood: '温情', words: ['谢谢', '家人', '妈妈', '爸爸', '拥抱', '爱你', '温柔', '陪着', '回家', '有我在', '我陪你', '别怕', '辛苦了', 'thank', 'thanks', 'family', 'mother', 'mom', 'father', 'dad', 'grandpa', 'grandmother', 'hug', 'gentle', 'stay with', 'go home', 'care', 'will you still come', 'we will', 'neither of you is going anywhere', 'not making us leave', 'stuck with me', 'real home', 'eat up', "nobody's holding back", "i'm here", 'you are not alone', "i'm here for you", 'i forgive you', "it's okay", 'take care', "i'm proud of you", "we're family"] },
+  { mood: '忧郁', words: ['阴暗', '神秘', '诡异', '沉重', '孤独', 'dark', 'strange', 'lonely', 'heavy', 'gloomy', 'mysterious', 'mystery', 'nothing matters', "what's the point", "i'm all alone", 'no one cares', "it's too late", 'i feel empty'] },
 ];
 
 function usage() {
@@ -347,16 +347,33 @@ function findMoodFolder(mood, groups) {
   return null;
 }
 
+const NEGATION_PATTERN = /(?:不|没|未|别|无|不是|从不|从没|never|not|no|don't|didn't|won't)\s*$/i;
+const WEAK_ENGLISH_CUES = new Set(['mom', 'mother', 'dad', 'father', 'family', 'wife', 'husband', 'love', 'happy', 'sad', 'sorry', 'thank', 'thanks', 'care', 'home']);
+
 function moodWordHits(text, rule) {
   const searchableText = String(text || '').toLowerCase();
   return rule.words.filter((word) => {
     const keyword = word.toLowerCase();
+    let match;
     if (/^[a-z ]+$/.test(keyword)) {
       const phrase = keyword.replace(/ +/g, '\\s+');
-      return new RegExp(`\\b${phrase}\\b`).test(searchableText);
+      match = new RegExp(`\\b${phrase}\\b`).exec(searchableText);
+    } else {
+      const index = searchableText.indexOf(keyword);
+      match = index < 0 ? null : { index };
     }
-    return searchableText.includes(keyword);
+    if (!match) return false;
+    return !NEGATION_PATTERN.test(searchableText.slice(Math.max(0, match.index - 8), match.index));
   });
+}
+
+function moodCandidates(text, groups) {
+  return MOOD_RULES.map((rule) => {
+    const hits = moodWordHits(text, rule);
+    const usableHits = hits.length === 1 && WEAK_ENGLISH_CUES.has(hits[0]) ? [] : hits;
+    const phraseHits = usableHits.filter((hit) => hit.length >= 3 || hit.includes(' ')).length;
+    return { mood: findMoodFolder(rule.mood, groups), hits: usableHits, score: usableHits.length + phraseHits * 0.25 };
+  }).filter((result) => result.mood && result.score > 0).sort((a, b) => b.score - a.score || b.hits.length - a.hits.length);
 }
 
 function inferMood(transcript, groups, override) {
@@ -367,14 +384,8 @@ function inferMood(transcript, groups, override) {
   }
 
   const text = (transcript?.segments || []).map((segment) => segment.text).join(' ');
-  const hits = MOOD_RULES.map((rule) => ({
-    mood: rule.mood,
-    hits: moodWordHits(text, rule),
-  })).filter((result) => result.hits.length > 0).sort((a, b) => b.hits.length - a.hits.length);
-  if (hits.length) {
-    const folder = findMoodFolder(hits[0].mood, groups);
-    if (folder) return { mood: folder, reason: `对白关键词: ${hits[0].hits.join('、')}` };
-  }
+  const hits = moodCandidates(text, groups);
+  if (hits.length) return { mood: hits[0].mood, reason: `对白情绪线索: ${hits[0].hits.join('、')}` };
   const fallback = findMoodFolder(DEFAULT_MOOD, groups) || [...groups.keys()][0];
   return { mood: fallback, reason: text ? '未命中情绪关键词，使用回退曲目' : '无转录内容，使用回退曲目' };
 }
@@ -395,15 +406,36 @@ const MIN_MULTI_TRACK_DURATION = 45;
 const DEFAULT_TRANSITION_FADE_SECONDS = 1;
 
 function classifyMoodText(text, groups) {
-  const hits = MOOD_RULES.map((rule) => ({
-    mood: rule.mood,
-    hits: moodWordHits(text, rule),
-  })).filter((result) => result.hits.length > 0).sort((a, b) => b.hits.length - a.hits.length);
-  for (const result of hits) {
-    const folder = findMoodFolder(result.mood, groups);
-    if (folder) return { mood: folder, hits: result.hits };
-  }
+  const result = moodCandidates(text, groups)[0];
+  if (result) return { mood: result.mood, hits: result.hits };
   return { mood: null, hits: [] };
+}
+
+// 字幕通常只有句段起止时间；按标点和转折词按字数分配时间，避免整句同时命中多个情绪时丢掉变化。
+function splitTranscriptSegment(segment) {
+  const text = String(segment.text || '').trim();
+  const matches = [...text.matchAll(/[。！？!?；;]+|(?:，|,)\s*(?=(?:(?:但是|可是|不过|然而|没想到|却|但)(?![a-zA-Z])|(?:but|however|yet|though|although|instead)\b))|\s+(?=(?:but|however|yet|though|although|instead)\b)/gi)];
+  if (!text || !matches.length) return [segment];
+  const clauses = [];
+  let cursor = 0;
+  for (const match of matches) {
+    const clause = text.slice(cursor, match.index).trim();
+    if (clause) clauses.push(clause);
+    cursor = match.index + match[0].length;
+  }
+  const tail = text.slice(cursor).trim();
+  if (tail) clauses.push(tail);
+  if (clauses.length < 2) return [segment];
+  const start = Number(segment.start) || 0;
+  const end = Number(segment.end) || start;
+  const total = clauses.reduce((sum, clause) => sum + clause.length, 0);
+  let offset = start;
+  return clauses.map((clause, index) => {
+    const next = index === clauses.length - 1 ? end : offset + (end - start) * clause.length / total;
+    const item = { ...segment, start: offset, end: next, text: clause };
+    offset = next;
+    return item;
+  });
 }
 
 function pickSectionMood(moodRuns, start, end, fallbackMood) {
@@ -417,7 +449,8 @@ function pickSectionMood(moodRuns, start, end, fallbackMood) {
   return [...scores.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || fallbackMood;
 }
 
-const MIN_MOOD_RUN_SECONDS = 6;
+const MIN_MOOD_RUN_SECONDS = 3;
+const MIN_MOOD_RUN_HITS = 2;
 
 function collectMoodRuns(classified) {
   const runs = [];
@@ -432,7 +465,7 @@ function collectMoodRuns(classified) {
     }
   }
 
-  const stableRuns = runs.filter((run) => run.end - run.start >= MIN_MOOD_RUN_SECONDS || run.segmentCount >= 2);
+  const stableRuns = runs.filter((run) => run.end - run.start >= MIN_MOOD_RUN_SECONDS || run.segmentCount >= 2 || run.hitCount >= MIN_MOOD_RUN_HITS);
   return stableRuns.reduce((merged, run) => {
     const previous = merged.at(-1);
     if (previous?.mood === run.mood) {
@@ -460,10 +493,13 @@ function buildMusicPlan({ duration, transcript, groups, options, trackUses }) {
   const requestedSegmentLimit = Number(options.maxTracksPerEpisode ?? 3);
   const configuredSegmentLimit = Number.isSafeInteger(requestedSegmentLimit) && requestedSegmentLimit >= 0 ? requestedSegmentLimit : 3;
   const maxSegments = Math.min(configuredSegmentLimit > 0 ? configuredSegmentLimit : availableTracks, availableTracks);
+  const requestedMinimum = Number(options.minTracksPerEpisode ?? 1);
+  const minimumSegments = Number.isSafeInteger(requestedMinimum) && requestedMinimum >= 1 ? requestedMinimum : 1;
+  if (minimumSegments > maxSegments) throw new Error(`可用的不同 BGM 曲目只有 ${maxSegments} 首，无法达到每集最低 ${minimumSegments} 段`);
   const episodeTracks = new Set();
   const baseMood = inferMood(transcript, groups, options.mood);
   const rawSegments = transcript?.segments || [];
-  const classified = rawSegments.map((segment) => options.mood
+  const classified = rawSegments.flatMap(splitTranscriptSegment).map((segment) => options.mood
     ? { ...segment, mood: baseMood.mood, hits: [] }
     : { ...segment, ...classifyMoodText(segment.text, groups) });
   const moodRuns = collectMoodRuns(classified);
@@ -477,7 +513,7 @@ function buildMusicPlan({ duration, transcript, groups, options, trackUses }) {
       score: previous.hitCount + current.hitCount + Math.min(current.end - current.start, 30) / 30,
     });
   }
-  const minimumSegmentDuration = Math.min(18, duration / Math.max(1, maxSegments));
+  const minimumSegmentDuration = Math.min(12, duration / Math.max(1, maxSegments));
   const boundaries = [];
   for (const candidate of candidates.sort((a, b) => b.score - a.score || a.boundary - b.boundary)) {
     if (boundaries.length >= maxSegments - 1) break;
@@ -497,7 +533,7 @@ function buildMusicPlan({ duration, transcript, groups, options, trackUses }) {
       start,
       end,
       mood,
-      reason: start > 0 && boundaries.some((boundary) => Math.abs(boundary - start) < 0.001)
+      reason: start > 0
         ? '台词情绪转折；' + sectionReason(classified, start, end, options)
         : sectionReason(classified, start, end, options),
       track,
@@ -753,6 +789,7 @@ async function renderEpisode({ videoPath, outputDir, groups, state, options, cat
       sourceMtimeMs: sourceStat.mtimeMs,
       catalogSignature,
       mood: options.mood,
+      minTracksPerEpisode: options.minTracksPerEpisode,
       transcribe: options.transcribe,
       transcriptionModel,
       transcriptionLanguage,

@@ -307,6 +307,49 @@ test('recognizes conflict and reconciliation turns in English drama dialogue', (
   assert.equal(new Set(reunion.segments.map((segment) => segment.track)).size, 2);
 });
 
+test('uses sensitive mood changes for the minimum target without uniform splitting', () => {
+  const groups = new Map([
+    ['浪漫', ['romance.wav']],
+    ['愤怒', ['anger.wav']],
+    ['默认', ['default.wav']],
+  ]);
+  const plan = buildMusicPlan({
+    duration: 120, transcript: { segments: [
+      { start: 10, end: 16, text: '我爱你，我们一直相爱' },
+      { start: 62, end: 65, text: '我真的很愤怒，也无法原谅' },
+    ] }, groups,
+    options: { minTracksPerEpisode: 2, maxTracksPerEpisode: 3 }, trackUses: new Map(),
+  });
+
+  assert.equal(plan.segments.length, 2);
+  assert.notDeepEqual(plan.segments.map(({ start, end }) => [start, end]), [[0, 60], [60, 120]]);
+  assert.equal(new Set(plan.segments.map((segment) => segment.track)).size, 2);
+  assert.match(plan.segments[1].reason, /情绪转折/);
+
+  const oneMood = buildMusicPlan({
+    duration: 120, transcript: null, groups,
+    options: { minTracksPerEpisode: 2, maxTracksPerEpisode: 3 }, trackUses: new Map(),
+  });
+  assert.equal(oneMood.segments.length, 1);
+});
+
+test('understands English clause turns and ignores negated mood words', () => {
+  const groups = new Map([
+    ['浪漫', ['romance.wav']],
+    ['愤怒', ['anger.wav']],
+    ['默认', ['default.wav']],
+  ]);
+  const plan = buildMusicPlan({
+    duration: 60,
+    transcript: { segments: [{ start: 0, end: 60, text: "I love you, but how dare you treat me like this?" }] },
+    groups,
+    options: { maxTracksPerEpisode: 3 },
+    trackUses: new Map(),
+  });
+  assert.deepEqual(plan.segments.map((segment) => segment.mood), ['浪漫', '愤怒']);
+  assert.equal(inferMood({ segments: [{ start: 0, end: 2, text: "I don't love you and I'm not happy." }] }, groups).mood, '默认');
+});
+
 test('batch MVP renders Chinese paths, ducking, validation, and resume', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bgm-mvp-'));
   const videoDir = path.join(root, '素材', '视频');
@@ -737,7 +780,7 @@ test('does not change BGM at visual cuts and ends music at the configured freeze
   assert.ok(Math.abs(Number(bgm.format.duration) - 27.4) < 0.05);
   assert.ok(Math.abs(Number(finalVideo.format.duration) - 30) < 0.2);
   const state = JSON.parse(await fs.readFile(path.join(outputDir, '.mvp-state.json'), 'utf8'));
-  assert.equal(state.version, 12);
+  assert.equal(state.version, 13);
   assert.equal(state.musicCatalog[path.resolve(musicDir, '损坏.mp3')].playable, false);
   assert.equal(state.musicCatalog[path.resolve(musicDir, '静音.wav')].playable, false);
 });

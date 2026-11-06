@@ -1,6 +1,6 @@
 {
   "name": "short-drama-bgm-mvp",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "private": true,
   "description": "Local batch BGM generation MVP for short-drama videos.",
   "main": "desktop/main.js",

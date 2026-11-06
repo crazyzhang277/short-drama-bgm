@@ -92,6 +92,7 @@ test('desktop defaults use packaged model and media-tool paths', () => {
   assert.equal(info.defaults.music, '');
   assert.match(info.defaults.output, /Documents[\\/]自动配 BGM Studio[\\/]output$/);
   assert.equal(info.defaults.maxTracksPerEpisode, 3);
+  assert.equal(info.defaults.minTracksPerEpisode, 2);
   assert.equal(info.defaults.outputAudio, true);
   assert.equal(info.defaults.outputVideo, true);
   assert.equal(info.defaults.outputTimeline, true);
@@ -103,6 +104,8 @@ test('desktop defaults use packaged model and media-tool paths', () => {
 
 test('desktop batch settings reject invalid BGM caps and empty output selection', async () => {
   const base = { videos: 'videos', music: 'music', output: 'output', transcribe: false };
+  await assert.rejects(startBatch({ ...base, minTracksPerEpisode: 0 }, () => {}), /每集 BGM 下限必须是正整数/);
+  await assert.rejects(startBatch({ ...base, minTracksPerEpisode: 3, maxTracksPerEpisode: 2 }, () => {}), /每集 BGM 下限不能高于上限/);
   await assert.rejects(startBatch({ ...base, maxTracksPerEpisode: 2.5 }, () => {}), /每集 BGM 上限必须是非负整数/);
   await assert.rejects(startBatch({ ...base, transitionFadeEnabled: 'false' }, () => {}), /曲目衔接淡入淡出必须使用开关值/);
   await assert.rejects(startBatch({ ...base, transitionFadeDuration: -0.1 }, () => {}), /曲目衔接时长必须是非负数字/);

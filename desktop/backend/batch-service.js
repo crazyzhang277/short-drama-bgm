@@ -16,6 +16,7 @@ const DEFAULTS = {
   freezeTail: '0:00',
   transitionFadeEnabled: true,
   transitionFadeDuration: DEFAULT_TRANSITION_FADE_SECONDS,
+  minTracksPerEpisode: 2,
   maxTracksPerEpisode: 3,
   outputAudio: true,
   outputVideo: true,
@@ -74,6 +75,7 @@ function cleanPath(value) { return String(value || '').trim(); }
 function asNumber(value, fallback) { const number = Number(value); return Number.isFinite(number) ? number : fallback; }
 
 async function assertRunConfig(input, runtime = {}) {
+  const minTracksInput = input?.minTracksPerEpisode;
   const maxTracksInput = input?.maxTracksPerEpisode;
   const rawTransitionFadeDuration = input?.transitionFadeDuration;
   const transitionFadeDuration = rawTransitionFadeDuration === undefined
@@ -87,6 +89,7 @@ async function assertRunConfig(input, runtime = {}) {
     duckDb: asNumber(input?.duckDb, -10), fadeIn: Math.max(0, asNumber(input?.fadeIn, 2)), fadeOut: Math.max(0, asNumber(input?.fadeOut, 2)), freezeTail: cleanPath(input?.freezeTail) || '0:00',
     transitionFadeEnabled: input?.transitionFadeEnabled === undefined ? DEFAULTS.transitionFadeEnabled : input.transitionFadeEnabled,
     transitionFadeDuration,
+    minTracksPerEpisode: minTracksInput === undefined ? DEFAULTS.minTracksPerEpisode : String(minTracksInput).trim() ? Number(minTracksInput) : NaN,
     maxTracksPerEpisode: maxTracksInput === undefined ? DEFAULTS.maxTracksPerEpisode : String(maxTracksInput).trim() ? Number(maxTracksInput) : NaN,
     outputAudio: input?.outputAudio !== false, outputVideo: input?.outputVideo !== false,
     outputTimeline: input?.outputTimeline !== false, outputTranscript: input?.outputTranscript !== false,
@@ -96,7 +99,9 @@ async function assertRunConfig(input, runtime = {}) {
   if (config.duckDb > 0) throw new Error('对白 ducking 增益必须是 0 或负数');
   if (typeof config.transitionFadeEnabled !== 'boolean') throw new Error('曲目衔接淡入淡出必须使用开关值');
   if (!Number.isFinite(config.transitionFadeDuration) || config.transitionFadeDuration < 0) throw new Error('曲目衔接时长必须是非负数字');
+  if (!Number.isSafeInteger(config.minTracksPerEpisode) || config.minTracksPerEpisode < 1) throw new Error('每集 BGM 下限必须是正整数');
   if (!Number.isSafeInteger(config.maxTracksPerEpisode) || config.maxTracksPerEpisode < 0) throw new Error('每集 BGM 上限必须是非负整数（0 表示不限制）');
+  if (config.maxTracksPerEpisode > 0 && config.minTracksPerEpisode > config.maxTracksPerEpisode) throw new Error('每集 BGM 下限不能高于上限');
   for (const key of ['outputAudio', 'outputVideo', 'outputTimeline', 'outputTranscript']) {
     if (input?.[key] !== undefined && typeof input[key] !== 'boolean') throw new Error('输出内容设置必须使用开关值');
   }
