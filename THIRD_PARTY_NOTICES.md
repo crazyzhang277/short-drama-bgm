@@ -10,11 +10,12 @@
 
 ## Windows 应用运行时
 
+- electron-updater 6.8.12：MIT；许可证文本保存在 `licenses/electron-updater-MIT.txt`。
 - Electron 45.2.2：Electron 的 MIT 许可证；发行包还包含 Electron/Chromium 等上游组件随发行包提供的许可证与 notices。
 - FFmpeg `n9.0.2-45-g1e65c6cd5d-20261103`：使用 BtbN 的 win64 shared 构建。该构建启用 shared 与 version3，未启用 `--enable-gpl`；随安装包提供上游 `LICENSE.txt`。构建来源、归档名和 SHA-256 写在 `runtime/ffmpeg/SOURCE.txt`。
 - 转录侧车还包含 PyAV 18.1.0（BSD 3-Clause）、huggingface-hub 2.4.0（Apache-2.0）、tokenizers 0.23.3（Apache-2.0）、ONNX Runtime 1.31.1（MIT）和 Silero VAD 模型（MIT）。本仓库 `licenses/` 目录保留这些组件对应的许可证文本。PyInstaller 6.16.0 使用 GPLv2-or-later with a special exception，允许用其构建并分发非自由程序；例外文本也保存在 `licenses/PyInstaller-LICENSE.txt`。
 
-许可证文本保存在 `licenses/`：faster-whisper、CTranslate2、Electron、ONNX Runtime 和 Silero VAD 的 MIT 文本，Apache-2.0、FFmpeg LGPL、PyAV 与 PyInstaller 许可证。安装包也会附带本说明和这些文本。
+许可证文本保存在 `licenses/`：faster-whisper、CTranslate2、Electron、electron-updater、ONNX Runtime 和 Silero VAD 的 MIT 文本，Apache-2.0、FFmpeg LGPL、PyAV 与 PyInstaller 许可证。安装包也会附带本说明和这些文本。
 
 ## 上游来源
 
@@ -25,6 +26,7 @@
 - ONNX Runtime：<https://github.com/microsoft/onnxruntime>
 - CTranslate2：<https://github.com/OpenNMT/CTranslate2>
 - Electron：<https://github.com/electron/electron>
+- electron-updater：<https://github.com/electron-userland/electron-builder/tree/master/packages/electron-updater>
 - FFmpeg 构建及来源：<https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-11-03-12-50>
 - PyInstaller：<https://github.com/pyinstaller/pyinstaller>
 

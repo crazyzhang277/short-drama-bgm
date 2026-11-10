@@ -20,7 +20,11 @@ const state = {
   running: false,
   logs: [],
   stopTimer: null,
+  update: { status: 'idle', currentVersion: '', version: '', releaseDate: '', releaseNotes: '', percent: 0, transferred: 0, total: 0, speed: 0, lastCheckedAt: '', errorMessage: '' },
+  updateSeenVersion: '',
 };
+
+const UPDATE_SEEN_KEY = 'bgm-studio-update-seen';
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
@@ -60,6 +64,62 @@ function artifactSummary(row) {
 function shortPath(value, max = 52) {
   const text = String(value || '');
   return text.length > max ? `…${text.slice(-max + 1)}` : text;
+}
+
+function loadSeenUpdate() {
+  try { return localStorage.getItem(UPDATE_SEEN_KEY) || ''; } catch { return ''; }
+}
+
+function markUpdateSeen() {
+  if (!state.update.version) return;
+  state.updateSeenVersion = state.update.version;
+  try { localStorage.setItem(UPDATE_SEEN_KEY, state.updateSeenVersion); } catch { /* local-only convenience */ }
+}
+
+function hasUnreadUpdate() {
+  return state.update.status === 'available' && Boolean(state.update.version) && state.updateSeenVersion !== state.update.version;
+}
+
+function applyUpdateState(update) {
+  if (update && typeof update === 'object') state.update = { ...state.update, ...update };
+}
+
+function formatUpdateDate(value) {
+  const date = new Date(value || '');
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('zh-CN', { hour12: false });
+}
+
+function renderUpdateCard() {
+  const update = state.update;
+  const version = escapeHtml(update.version || '—');
+  const notes = escapeHtml(update.releaseNotes || '本次更新包含稳定性改进。');
+  const sizeNotice = update.sizeBytes ? `预计安装包 ${formatBytes(update.sizeBytes)}；实际下载量可能因差分更新而变化。` : '下载量以实际下载进度为准。';
+  const statusLabel = ({ idle: '待检查', checking: '检查中', available: '有更新', downloading: '下载中', downloaded: '待安装', installing: '安装中', 'not-available': '已是最新版', error: '需要处理' })[update.status] || '待检查';
+  const percent = Math.min(100, Math.max(0, Number(update.percent) || 0));
+  const transfer = `${formatBytes(update.transferred)} / ${formatBytes(update.total)}`;
+  const speed = update.speed ? ` · ${formatBytes(update.speed)}/秒` : '';
+  const checkedAt = formatUpdateDate(update.lastCheckedAt);
+  let content;
+  if (update.status === 'checking') {
+    content = '<strong>正在检查更新…</strong><p>不会影响当前批次和本地文件。</p><div class="update-actions"><button class="button ghost" disabled>检查中</button></div>';
+  } else if (update.status === 'available') {
+    content = `<strong>发现新版本</strong><div class="update-version">v${version}</div><p class="update-notes">${notes}</p><p class="config-note">发布于 ${formatUpdateDate(update.releaseDate)} · GitHub Releases</p><p class="config-note">${escapeHtml(sizeNotice)}</p><div class="update-actions"><button class="button primary" data-action="download-update">下载更新</button><button class="button ghost" data-action="open-update-page">查看下载页面</button></div>`;
+  } else if (update.status === 'downloading') {
+    content = `<strong>正在下载 v${version}</strong><div class="update-progress" role="progressbar" aria-label="更新下载进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent.toFixed(0)}"><span style="width:${percent}%"></span></div><p class="config-note">${percent.toFixed(0)}% · 已下载 ${transfer}${speed}</p><div class="update-actions"><button class="button ghost" data-action="cancel-update">取消下载</button></div>`;
+  } else if (update.status === 'downloaded') {
+    content = `<strong>更新已准备好</strong><p>v${version} 已下载完成，重启后安装。</p><div class="update-actions"><button class="button ghost" data-action="defer-update">稍后安装</button><button class="button primary" data-action="install-update" ${state.running ? 'disabled' : ''}>${state.running ? '批次运行中' : '立即重启安装'}</button></div>${state.running ? '<p class="config-note">批次运行中，完成后可安装更新。</p>' : ''}`;
+  } else if (update.status === 'not-available') {
+    content = `<strong>当前已是最新版</strong><p>当前版本 v${escapeHtml(update.currentVersion || state.version || '—')} · 上次检查 ${checkedAt}</p><div class="update-actions"><button class="button ghost" data-action="check-update">再次检查</button></div>`;
+  } else if (update.status === 'error') {
+    content = `<strong>更新操作失败</strong><p>${escapeHtml(update.errorMessage || 'GitHub 暂时无法访问')}，当前版本仍可正常使用。</p><div class="update-actions"><button class="button ghost" data-action="check-update">重试</button><button class="button ghost" data-action="open-update-page">打开下载页面</button></div>`;
+  } else if (update.status === 'installing') {
+    content = '<strong>正在准备重启安装</strong><p>请稍候，当前应用将关闭并安装更新。</p>';
+  } else if (!update.enabled) {
+    content = '<strong>应用内更新未启用</strong><p>开发模式不会联网检查更新。正式安装版可在此检查、下载和安装 GitHub Releases 中的新版本。</p>';
+  } else {
+    content = `<strong>检查更新</strong><p>更新不会影响本地批次和文件。${update.lastCheckedAt ? `上次检查 ${checkedAt}。` : ''}</p><div class="update-actions"><button class="button ghost" data-action="check-update">检查更新</button></div>`;
+  }
+  return `<div class="panel update-panel"><div class="panel-head"><strong>更新</strong><span class="update-state-label">${escapeHtml(statusLabel)}</span></div><div class="panel-body update-body" role="status" aria-live="polite">${content}</div></div>`;
 }
 
 function showToast(message, error = false) {
@@ -181,9 +241,8 @@ function renderSettings() {
 }
 
 function renderAbout() {
-  return `<section class="view"><div class="view-header"><div><h1>关于</h1></div></div><div class="layout-2"><div class="panel"><div class="panel-head"><strong>软件信息</strong></div><div class="panel-body"><div class="inspector-row"><span>名称</span><b>自动配背景音乐工作台</b></div><div class="inspector-row"><span>版本</span><b>${escapeHtml(state.version || '—')}</b></div><div class="inspector-row"><span>处理方式</span><b>本地运行</b></div><div class="config-note">视频、音频和批次产物按所选目录在本机处理与保存。</div></div></div><aside><div class="panel"><div class="panel-head"><strong>开源组件与许可证</strong></div><div class="panel-body"><p class="about-copy">本项目原创代码采用 MIT License，文本见随包和源码中的 LICENSE。随包第三方组件及其许可证如下：</p><div class="inspector-row"><span>faster-whisper / CTranslate2 / Silero VAD</span><b>MIT</b></div><div class="inspector-row"><span>Small 模型</span><b>MIT；原始 Whisper small：Apache-2.0</b></div><div class="inspector-row"><span>Electron</span><b>MIT</b></div><div class="inspector-row"><span>FFmpeg shared</span><b>LGPL-3.0</b></div><div class="inspector-row"><span>PyAV / PyInstaller</span><b>BSD-3-Clause / GPLv2 特别例外</b></div><div class="config-note">完整来源、版权说明与许可证文本位于 resources/licenses/THIRD_PARTY_NOTICES.md 和 resources/licenses/。</div></div></div></aside></div></section>`;
+  return `<section class="view"><div class="view-header"><div><h1>关于</h1></div></div><div class="layout-2"><div><div class="panel"><div class="panel-head"><strong>软件信息</strong></div><div class="panel-body"><div class="inspector-row"><span>名称</span><b>自动配背景音乐工作台</b></div><div class="inspector-row"><span>版本</span><b>${escapeHtml(state.version || '—')}</b></div><div class="inspector-row"><span>处理方式</span><b>本地运行</b></div><div class="config-note">视频、音频和批次产物按所选目录在本机处理与保存。</div></div></div><div class="panel"><div class="panel-head"><strong>开源组件与许可证</strong></div><div class="panel-body"><p class="about-copy">本项目原创代码采用 MIT License，文本见随包和源码中的 LICENSE。随包第三方组件及其许可证如下：</p><div class="inspector-row"><span>faster-whisper / CTranslate2 / Silero VAD</span><b>MIT</b></div><div class="inspector-row"><span>Small 模型</span><b>MIT；原始 Whisper small：Apache-2.0</b></div><div class="inspector-row"><span>Electron</span><b>MIT</b></div><div class="inspector-row"><span>electron-updater</span><b>MIT</b></div><div class="inspector-row"><span>FFmpeg shared</span><b>LGPL-3.0</b></div><div class="inspector-row"><span>PyAV / PyInstaller</span><b>BSD-3-Clause / GPLv2 特别例外</b></div><div class="config-note">完整来源、版权说明与许可证文本位于 resources/licenses/THIRD_PARTY_NOTICES.md 和 resources/licenses/。</div></div></div></div><aside>${renderUpdateCard()}</aside></div></section>`;
 }
-
 function timelineBlock(item, duration, kind, selected = false, label = '') {
   const start = Math.max(0, Number(item.start) || 0);
   const end = Math.max(start, Number(item.end) || start);
@@ -252,6 +311,12 @@ function render(preserveScroll = false) {
   topStart.disabled = !state.running && (!pathsReady || Boolean(state.data.warning) || (state.config.transcribe && !state.data.model?.exists) || !outputsReady);
   topStart.title = topStart.disabled ? (state.data.warning || '请检查目录、转录模型和输出设置') : '';
   document.querySelectorAll('.nav-item').forEach((item) => item.classList.toggle('active', item.dataset.view === state.view));
+  const aboutNav = document.querySelector('.nav-item[data-view="about"]');
+  if (state.view === 'about' && hasUnreadUpdate()) markUpdateSeen();
+  if (aboutNav) {
+    aboutNav.setAttribute('aria-label', hasUnreadUpdate() ? '关于，有新版本可用' : '关于');
+    aboutNav.querySelector('.update-dot')?.classList.toggle('visible', hasUnreadUpdate());
+  }
   sidebarRuntime.textContent = state.running ? '批次运行中 · 可中断' : state.data.rows.length ? '已读取上次批次状态' : '离线链路待启动';
   screen.innerHTML = ({ desk: renderDesk, timeline: renderTimeline, transcript: renderTranscript, settings: renderSettings, about: renderAbout })[state.view]?.() || renderDesk();
   document.getElementById('final-video')?.addEventListener('error', () => {
@@ -354,6 +419,25 @@ document.addEventListener('click', async (event) => {
       render();
     } else if (action === 'refresh') {
       await refresh();
+    } else if (action === 'check-update') {
+      applyUpdateState(await api.checkForUpdates());
+      showToast('正在检查更新…');
+      render();
+    } else if (action === 'download-update') {
+      applyUpdateState(await api.downloadUpdate());
+      showToast('正在下载更新…');
+      render();
+    } else if (action === 'cancel-update') {
+      applyUpdateState(await api.cancelUpdate());
+      showToast('已取消下载更新');
+      render();
+    } else if (action === 'defer-update') {
+      showToast('更新已保留，稍后可在“关于”页安装');
+    } else if (action === 'install-update') {
+      applyUpdateState(await api.installUpdate());
+      render();
+    } else if (action === 'open-update-page') {
+      await api.openUpdatePage();
     } else if (action === 'toggle-maximize') {
       await api.toggleMaximize();
     } else if (action === 'start') {
@@ -456,10 +540,17 @@ api.onBatchEvent((event) => {
   render();
 });
 
+api.onUpdateEvent((update) => {
+  applyUpdateState(update);
+  render();
+});
+
 (async () => {
   try {
     const info = await api.appInfo();
     state.version = info.version || '';
+    state.updateSeenVersion = loadSeenUpdate();
+    applyUpdateState(info.update);
     state.defaults = info.defaults || {};
     state.bundledRuntime = Boolean(info.bundledRuntime);
     state.config = loadConfig(state.defaults);

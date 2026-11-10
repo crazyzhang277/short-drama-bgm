@@ -93,7 +93,38 @@ if ($LASTEXITCODE -ne 0) { throw 'sidecar EXE self-check failed' }
 foreach ($runtimeFile in @('runtime\ffmpeg\ffmpeg.exe', 'runtime\ffmpeg\ffprobe.exe', 'runtime\ffmpeg\LICENSE.txt', 'runtime\ffmpeg\SOURCE.txt', 'runtime\model\small\model.bin', 'runtime\model\small\config.json', 'runtime\model\small\README.md', 'runtime\model\small\SOURCE.txt')) {
   if (-not (Test-Path -LiteralPath (Join-Path $root $runtimeFile))) { throw "Bundled runtime file is missing: $runtimeFile" }
 }
-& (Join-Path $root 'runtime\ffmpeg\ffmpeg.exe') -version | Select-Object -First 1
+$ffmpegVersion = & (Join-Path $root 'runtime\ffmpeg\ffmpeg.exe') -version
 if ($LASTEXITCODE -ne 0) { throw 'Bundled FFmpeg failed its startup check.' }
+$ffmpegVersion | Select-Object -First 1
 & $builder --win
 if ($LASTEXITCODE -ne 0) { throw "desktop installer build failed (exit code $LASTEXITCODE)" }
+
+$latest = Join-Path $root 'release\latest.yml'
+if (-not (Test-Path -LiteralPath $latest)) { throw 'electron-builder did not create release/latest.yml; refusing to publish an incomplete updater release.' }
+$latestText = Get-Content -LiteralPath $latest -Raw
+$versionMatch = [regex]::Match($latestText, '(?m)^version:\s*(.+)$')
+$pathMatch = [regex]::Match($latestText, '(?m)^path:\s*(.+)$')
+$hashMatch = [regex]::Match($latestText, '(?m)^sha512:\s*(.+)$')
+$fileUrlMatch = [regex]::Match($latestText, '(?m)^\s+- url:\s*(.+)$')
+$fileHashMatch = [regex]::Match($latestText, '(?m)^\s+sha512:\s*(.+)$')
+$fileSizeMatch = [regex]::Match($latestText, '(?m)^\s+size:\s*(\d+)$')
+$packageVersion = (Get-Content -LiteralPath (Join-Path $root 'package.json') -Raw | ConvertFrom-Json).version
+if (-not $versionMatch.Success -or $versionMatch.Groups[1].Value.Trim() -ne $packageVersion -or -not $pathMatch.Success -or -not $hashMatch.Success -or -not $fileUrlMatch.Success -or -not $fileHashMatch.Success -or -not $fileSizeMatch.Success) {
+  throw 'release/latest.yml is missing matching package version, installer URL, size, or SHA-512 metadata.'
+}
+$installerName = $pathMatch.Groups[1].Value.Trim()
+if ($fileUrlMatch.Groups[1].Value.Trim() -ne $installerName -or $fileHashMatch.Groups[1].Value.Trim() -ne $hashMatch.Groups[1].Value.Trim()) {
+  throw 'release/latest.yml installer path, files URL, or SHA-512 entries do not match.'
+}
+$installer = Join-Path (Join-Path $root 'release') $installerName
+$blockmap = Join-Path (Join-Path $root 'release') ($installerName + '.blockmap')
+if (-not (Test-Path -LiteralPath $installer) -or -not (Test-Path -LiteralPath $blockmap)) {
+  throw "Updater release is missing the installer or matching .blockmap for latest.yml: $installerName"
+}
+$installerInfo = Get-Item -LiteralPath $installer
+if ($fileSizeMatch.Groups[1].Value -ne $installerInfo.Length.ToString()) { throw 'release/latest.yml size does not match the generated installer.' }
+$stream = [IO.File]::OpenRead($installer)
+$sha = [Security.Cryptography.SHA512]::Create()
+try { $actualHash = [Convert]::ToBase64String($sha.ComputeHash($stream)) }
+finally { $stream.Dispose(); $sha.Dispose() }
+if ($actualHash -ne $hashMatch.Groups[1].Value.Trim()) { throw 'release/latest.yml SHA-512 does not match the generated installer.' }

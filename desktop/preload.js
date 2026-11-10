@@ -13,9 +13,20 @@ contextBridge.exposeInMainWorld('bgmStudio', {
   episodeDetail: (input) => ipcRenderer.invoke('episode:detail', input),
   openPath: (target) => ipcRenderer.invoke('shell:openPath', target),
   showItem: (target) => ipcRenderer.invoke('shell:showItem', target),
+  updateState: () => ipcRenderer.invoke('update:state'),
+  checkForUpdates: () => ipcRenderer.invoke('update:check'),
+  downloadUpdate: () => ipcRenderer.invoke('update:download'),
+  cancelUpdate: () => ipcRenderer.invoke('update:cancel'),
+  installUpdate: () => ipcRenderer.invoke('update:install'),
+  openUpdatePage: () => ipcRenderer.invoke('update:open-page'),
   onBatchEvent: (listener) => {
     const wrapped = (_event, payload) => listener(payload);
     ipcRenderer.on('batch:event', wrapped);
     return () => ipcRenderer.removeListener('batch:event', wrapped);
+  },
+  onUpdateEvent: (listener) => {
+    const wrapped = (_event, payload) => listener(payload);
+    ipcRenderer.on('update:event', wrapped);
+    return () => ipcRenderer.removeListener('update:event', wrapped);
   },
 });

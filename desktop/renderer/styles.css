@@ -294,3 +294,19 @@ body { font-size: 14px; }
 
 :focus-visible { outline: 3px solid var(--cyan); outline-offset: 2px; }
 .switch input:focus-visible + span { outline: 3px solid var(--cyan); outline-offset: 3px; }
+
+.update-dot-slot { display: inline-flex; width: 10px; height: 10px; margin-left: 4px; vertical-align: middle; align-items: center; justify-content: center; }
+.update-dot { display: block; width: 7px; height: 7px; border-radius: 50%; background: var(--red); opacity: 0; transform: scale(.8); transition: opacity .15s ease, transform .15s ease; }
+.update-dot.visible { opacity: 1; transform: scale(1); }
+.update-panel { min-height: 220px; }
+.update-state-label { color: var(--muted); font: 11px ui-monospace, Consolas, monospace; text-transform: lowercase; }
+.update-body > strong { display: block; font-size: 16px; }
+.update-body > p { margin: 10px 0; color: var(--muted); line-height: 1.65; }
+.update-version { margin-top: 8px; color: var(--orange); font-size: 22px; font-weight: 750; }
+.update-notes { max-height: 150px; overflow: auto; white-space: pre-wrap; }
+.update-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 17px; }
+.update-progress { height: 10px; margin-top: 18px; overflow: hidden; border: 1px solid rgba(8,125,147,.32); border-radius: 99px; background: var(--panel-3); }
+.update-progress span { display: block; height: 100%; background: var(--cyan); transition: width .18s ease; }
+@media (prefers-reduced-motion: reduce) {
+  .update-dot, .update-progress span { transition: none; }
+}

@@ -1,6 +1,6 @@
 {
   "name": "short-drama-bgm-mvp",
-  "version": "0.2.12",
+  "version": "0.2.13",
   "private": true,
   "description": "Local batch BGM generation MVP for short-drama videos.",
   "main": "desktop/main.js",
@@ -64,16 +64,24 @@
     "nsis": {
       "oneClick": false,
       "perMachine": false,
+      "artifactName": "short-drama-bgm-setup-${version}.${ext}",
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "自动配背景音乐工作台",
       "deleteAppDataOnUninstall": false
     },
-    "publish": [],
+    "publish": {
+      "provider": "github",
+      "owner": "crazyzhang277",
+      "repo": "short-drama-bgm"
+    },
     "electronDist": "node_modules/electron/dist"
   },
   "overrides": {
     "minimatch": "^11.0.1"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.12"
   }
 }
