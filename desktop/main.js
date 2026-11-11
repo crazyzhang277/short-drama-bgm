@@ -15,6 +15,7 @@ if (app.isPackaged) {
 }
 const { episodeDetail, getInfo, inspectBatch, startBatch, stopBatch } = require('./backend/batch-service');
 const { RELEASE_URL, createUpdateService } = require('./update-service');
+const { schedulePendingUpdateCleanup } = require('./update-cache');
 
 let mainWindow;
 let updateService;
@@ -55,6 +56,7 @@ function sendUpdate(event) {
 
 app.whenReady().then(() => {
   if (app.isPackaged) {
+    schedulePendingUpdateCleanup();
     const { CancellationToken, autoUpdater } = require('electron-updater');
     const updateCheckPath = path.join(app.getPath('userData'), 'update-check.json');
     let lastCheckAt = 0;
