@@ -16,17 +16,28 @@ function releaseNotesText(value) {
     .join('\n\n');
 }
 
+async function fetchReleaseNotes(version) {
+  const response = await fetch(`https://api.github.com/repos/crazyzhang277/short-drama-bgm/releases/tags/v${encodeURIComponent(version)}`, {
+    headers: { Accept: 'application/vnd.github+json' },
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!response.ok) throw new Error('无法获取发布说明');
+  const release = await response.json();
+  return release.tag_name === `v${version}` && !release.draft && !release.prerelease ? asText(release.body) : '';
+}
+
 function finiteNumber(value, fallback = 0) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
 }
 
-function updateInfo(info = {}) {
+function updateInfo(info = {}, previous = {}) {
+  if (info.version && info.version !== previous.version) previous = {};
   return {
-    version: asText(info.version),
-    releaseDate: asText(info.releaseDate),
-    releaseNotes: releaseNotesText(info.releaseNotes),
-    sizeBytes: Math.max(0, finiteNumber(info.files?.[0]?.size)),
+    version: asText(info.version) || previous.version || '',
+    releaseDate: asText(info.releaseDate) || previous.releaseDate || '',
+    releaseNotes: releaseNotesText(info.releaseNotes) || previous.releaseNotes || '',
+    sizeBytes: Math.max(0, finiteNumber(info.files?.[0]?.size, previous.sizeBytes || 0)),
   };
 }
 
@@ -129,7 +140,7 @@ function createUpdateService({
     }));
     on('update-downloaded', (info = {}) => publish({
       status: 'downloaded',
-      ...updateInfo(info),
+      ...updateInfo(info, state),
       percent: 100,
       transferred: Math.max(0, finiteNumber(info.transferred || info.filesize)),
       total: Math.max(0, finiteNumber(info.total || info.filesize)),
@@ -138,7 +149,7 @@ function createUpdateService({
     }));
     on('update-cancelled', (info = {}) => publish({
       status: 'available',
-      ...updateInfo(info),
+      ...updateInfo(info, state),
       percent: 0,
       transferred: 0,
       total: 0,
@@ -157,6 +168,13 @@ function createUpdateService({
       publish({ status: 'checking', errorMessage: '' });
       try {
         await updater.checkForUpdates();
+        if (state.status === 'available' && state.version && !state.releaseNotes.trim()) {
+          const version = state.version;
+          try {
+            const releaseNotes = await fetchReleaseNotes(version);
+            if (state.version === version && releaseNotes) publish({ releaseNotes });
+          } catch { /* Release notes must not block downloading an update. */ }
+        }
       } catch (error) {
         fail(error);
       } finally {

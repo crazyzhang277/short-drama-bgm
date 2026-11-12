@@ -83,13 +83,15 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .health-caption { color: var(--muted-2); font-size: 10px; }
 .path-stack { display: grid; gap: 10px; }
 .path-row { display: grid; grid-template-columns: 82px minmax(0, 1fr) 42px; gap: 8px; align-items: center; }
-.video-path-row { grid-template-columns: 82px minmax(0, 1fr) 42px 56px; }
 .path-row label, .field label { color: var(--muted-2); font: 10px ui-monospace, Consolas, monospace; letter-spacing: .08em; }
 .text-input, .number-input, .select-input { min-width: 0; width: 100%; height: 39px; border: 1px solid var(--line); border-radius: 5px; outline: none; background: #0a141c; color: var(--ink); padding: 0 11px; font-size: 11px; }
 .text-input:focus, .number-input:focus { border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(134,212,223,.08); }
 .pick-button { width: 42px; height: 39px; border: 1px solid var(--line); border-radius: 5px; background: #121f28; color: var(--cyan); font-size: 16px; }
 .pick-button:hover { border-color: var(--cyan); }
-.video-file-button { width: 56px; font-size: 10px; }
+#video-source-button { anchor-name: --video-source; }
+.video-source-menu { position-anchor: --video-source; inset: auto; top: anchor(bottom); right: anchor(right); position-try-fallbacks: flip-block; width: 174px; margin: 6px 0 0; padding: 5px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); box-shadow: var(--shadow); }
+.video-source-menu button { display: block; width: 100%; padding: 10px 12px; border: 0; border-radius: 4px; background: transparent; color: inherit; text-align: left; font: inherit; font-size: 13px; }
+.video-source-menu button:hover, .video-source-menu button:focus-visible { background: var(--panel-3); color: var(--cyan); }
 .config-note { margin-top: 13px; color: var(--muted); font-size: 10px; line-height: 1.6; }
 .config-note strong { color: var(--ink); font-weight: 600; }
 .config-details, .field-help { color: var(--muted); font-size: 13px; }
@@ -268,7 +270,6 @@ body { font-size: 14px; }
   .header-actions, .detail-actions { flex-wrap: wrap; }
   .metrics, .timeline-meta { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .path-row { grid-template-columns: 70px minmax(0,1fr) 38px; gap: 6px; }
-  .video-path-row { grid-template-columns: 70px minmax(0,1fr) 38px 48px; }
   .queue-table { display: block; overflow-x: auto; }
   .transcript-line { grid-template-columns: 62px minmax(0,1fr); gap: 8px; }
   .transcript-tag { grid-column: 2; justify-self: start; }
@@ -284,7 +285,6 @@ body { font-size: 14px; }
   .number-input { padding: 0 6px; }
   .nav-item small { display: none; }
   .path-row, .video-path-row { grid-template-columns: 58px minmax(0,1fr) 36px; }
-  .video-file-button { grid-column: 2 / 4; width: 100%; }
 }
 
 .nav-index, .offline-badge { font-size: 12px; }
@@ -303,7 +303,9 @@ body { font-size: 14px; }
 .update-body > strong { display: block; font-size: 16px; }
 .update-body > p { margin: 10px 0; color: var(--muted); line-height: 1.65; }
 .update-version { margin-top: 8px; color: var(--orange); font-size: 22px; font-weight: 750; }
-.update-notes { max-height: 150px; overflow: auto; white-space: pre-wrap; }
+.release-notes { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+.release-notes h3 { margin: 0 0 10px; font-size: 13px; }
+.update-notes { max-height: min(340px, 48vh); overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); font-size: 12px; line-height: 1.7; }
 .update-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 17px; }
 .update-progress { height: 10px; margin-top: 18px; overflow: hidden; border: 1px solid rgba(8,125,147,.32); border-radius: 99px; background: var(--panel-3); }
 .update-progress span { display: block; height: 100%; background: var(--cyan); transition: width .18s ease; }
@@ -353,6 +355,17 @@ body { font-size: 14px; }
 .queue-toolbar .text-input { flex: 1; width: 120px; min-width: 100px; }
 .select-input { min-height: 39px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 5px; font: inherit; }
 #config-preset { width: 100%; margin-top: 8px; }
+#config-preset, #config-preset::picker(select) { appearance: base-select; }
+#config-preset::picker(select) { overflow: visible; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); box-shadow: var(--shadow); }
+#config-preset option { position: relative; display: block; padding: 9px 30px 9px 12px; white-space: normal; }
+#config-preset option:hover, #config-preset option:focus-visible { background: var(--panel-3); }
+#config-preset option::checkmark { position: absolute; top: 10px; right: 10px; }
+#config-preset .preset-description { position: absolute; top: 0; right: calc(100% + 10px); z-index: 1; display: block; width: 280px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); box-shadow: var(--shadow); color: var(--muted); font-size: 12px; line-height: 1.6; visibility: hidden; pointer-events: none; }
+#config-preset option:is(:hover, :focus-visible) .preset-description { visibility: visible; }
+#config-preset selectedcontent .preset-description { display: none; }
+@media (max-width: 1000px) {
+  #config-preset .preset-description { position: fixed; inset: auto 14px 14px; width: auto; }
+}
 .queue-scroll { overflow-x: auto; }
 .episode-sub { overflow-wrap: anywhere; }
 .drop-zone { margin: 12px 0; padding: 12px; border: 1px dashed var(--cyan); border-radius: 5px; color: var(--muted); font-size: 12px; line-height: 1.6; }

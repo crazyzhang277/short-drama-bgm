@@ -83,6 +83,10 @@ const { promisify } = require('node:util');
       assert.equal(await evaluate('document.getElementById("config-maxTracksPerEpisode").disabled'), false);
       assert.equal(await evaluate('JSON.parse(localStorage.getItem("bgm-studio-config")).scenePriority'), false);
       await evaluate('document.querySelector(".nav-item[data-view=desk]").click()');
+      assert.equal(await evaluate('document.querySelectorAll(".video-path-row > .pick-button").length'), 1);
+      await evaluate('document.getElementById("video-source-button").click()');
+      assert.equal(await evaluate('document.getElementById("video-source-menu").matches(":popover-open") && document.querySelectorAll("#video-source-menu button").length === 2'), true);
+      await evaluate('document.getElementById("video-source-menu").hidePopover()');
       for (const key of ['strictInstrumental', 'preflightEnabled']) assert.equal(await evaluate(`document.querySelector('[data-config-key=${key}]').checked`), launch === 0);
       const skipped = await evaluate('bgmStudio.inspectBatch(' + JSON.stringify({ videos: sampleVideo, music, output: path.join(root, 'output'), transcribe: true, preflightEnabled: false }) + ')');
       assert.equal(skipped.rows.length, 1);
@@ -93,6 +97,9 @@ const { promisify } = require('node:util');
       for (const preset of ['standard', 'preview']) {
         await evaluate(`document.getElementById('config-preset').value='${preset}'; document.getElementById('config-preset').dispatchEvent(new Event('change',{bubbles:true}))`);
         assert.equal(await evaluate('state.config.strictInstrumental || state.config.preflightEnabled'), false);
+        assert.equal(await evaluate('selectedPreset()'), preset);
+        assert.equal(await evaluate('localStorage.getItem("bgm-studio-preset")'), preset);
+        assert.equal(await evaluate('document.querySelector("#config-preset selectedcontent span").textContent'), preset === 'standard' ? '标准交付' : '快速预览');
       }
       const inspect = await evaluate('bgmStudio.inspectBatch(' + JSON.stringify({ videos: sampleVideo, music, output: path.join(root, 'output'), transcribe: true }) + ')');
       assert.equal(inspect.tools.ffmpeg.available, true);

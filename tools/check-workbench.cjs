@@ -213,17 +213,79 @@ app.whenReady().then(async () => {
     await waitFor('window.oldInspectFinished');
     assert.equal(await js('state.data === window.disabledData && !document.getElementById("top-start").disabled'), true);
     assert.doesNotMatch(await js('document.getElementById("preflight-checks").textContent'), /正在检查|等待检测|检测通过/);
-    for (const preset of ['standard', 'preview']) {
+    assert.equal(await js('document.querySelectorAll(".video-path-row > .pick-button").length'), 1);
+    assert.equal(await js('document.querySelectorAll(".video-file-button").length'), 0);
+    await js('window.originalVideoPath=state.config.videos; document.getElementById("video-source-button").scrollIntoView({block:"center"}); document.getElementById("video-source-button").focus(); document.getElementById("video-source-button").click()');
+    await waitFor('document.getElementById("video-source-menu").matches(":popover-open")');
+    await capture('video-source-menu.png');
+    window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'ESC' });
+    window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'ESC' });
+    await waitFor('!document.getElementById("video-source-menu").matches(":popover-open")');
+    assert.equal(await js('document.activeElement.id'), 'video-source-button');
+    await js('document.getElementById("video-source-button").click(); document.querySelector("[data-action=choose-video-file]").click()');
+    await waitFor('workbenchTest.calls().some(call=>call.action==="choose-video-file")');
+    assert.equal(await js('state.config.videos === originalVideoPath && !document.getElementById("video-source-menu").matches(":popover-open")'), true);
+    await js('workbenchTest.pickPath("C:/fixture/single-video.mp4"); document.getElementById("video-source-button").click(); document.querySelector("[data-action=choose-video-file]").click()');
+    await waitFor('state.data.config?.videos === "C:/fixture/single-video.mp4"');
+    assert.equal(await js('JSON.parse(localStorage.getItem("bgm-studio-config")).videos'), 'C:/fixture/single-video.mp4');
+    await js('workbenchTest.pickPath(originalVideoPath); document.getElementById("video-source-button").click(); document.querySelector("[data-action=choose-videos]").click()');
+    await waitFor('state.data.config?.videos === originalVideoPath');
+    assert.equal(await js('workbenchTest.calls().some(call=>call.action==="choose-directory" && call.title==="选择视频目录")'), true);
+    for (const width of [760, 1440]) {
+      window.setContentSize(width, 900);
+      await js('document.getElementById("video-source-button").scrollIntoView({block:"center"}); document.getElementById("video-source-button").click()');
+      assert.equal(await js('(()=>{const rect=document.getElementById("video-source-menu").getBoundingClientRect();return rect.width<=180&&rect.left>=0&&rect.right<=innerWidth&&rect.top>=0&&rect.bottom<=innerHeight})()'), true);
+      const outside = await js('(()=>{const rect=document.getElementById("config-videos").getBoundingClientRect();return {x:Math.round(rect.x+rect.width/2),y:Math.round(rect.y+rect.height/2)}})()');
+      window.webContents.sendInputEvent({ type: 'mouseDown', ...outside, button: 'left', clickCount: 1 });
+      window.webContents.sendInputEvent({ type: 'mouseUp', ...outside, button: 'left', clickCount: 1 });
+      await waitFor('!document.getElementById("video-source-menu").matches(":popover-open")');
+    }
+    assert.equal(await js('CSS.supports("appearance", "base-select")'), true);
+    for (const [preset, label] of [['standard', '标准交付'], ['preview', '快速预览'], ['dialogue', '对白优先'], ['music', '纯配乐']]) {
       await js(`document.getElementById('config-preset').value='${preset}'; document.getElementById('config-preset').dispatchEvent(new Event('change',{bubbles:true}))`);
       await waitFor('!state.preflightPending');
+      assert.equal(await js('document.getElementById("config-preset").value'), preset);
+      assert.equal(await js('document.querySelector("#config-preset selectedcontent span").textContent'), label);
+      assert.equal(await js('localStorage.getItem("bgm-studio-preset")'), preset);
       assert.equal(await js('JSON.parse(localStorage.getItem("bgm-studio-config")).preflightEnabled'), false);
       assert.equal(await js('JSON.parse(localStorage.getItem("bgm-studio-config")).strictInstrumental'), false);
     }
+    await js('document.getElementById("config-preset").showPicker()');
+    assert.equal(await js('(()=>{const items=[...document.querySelectorAll("#config-preset option")];return items.at(-1).getBoundingClientRect().bottom-items[0].getBoundingClientRect().top<240})()'), true);
+    for (const preset of ['preview', 'standard', 'dialogue', 'music']) {
+      const position = await js(`(()=>{const rect=document.querySelector('#config-preset option[value="${preset}"]').getBoundingClientRect();return {x:Math.round(rect.x+rect.width/2),y:Math.round(rect.y+rect.height/2)}})()`);
+      window.webContents.sendInputEvent({ type: 'mouseMove', ...position });
+      await waitFor(`document.querySelector('#config-preset option[value="${preset}"]').matches(':hover')`);
+      assert.equal(await js(`getComputedStyle(document.querySelector('#config-preset option[value="${preset}"] .preset-description')).visibility`), 'visible');
+      assert.equal(await js(`(()=>{const rect=document.querySelector('#config-preset option[value="${preset}"] .preset-description').getBoundingClientRect();return rect.left>=0&&rect.right<=innerWidth&&rect.top>=0&&rect.bottom<=innerHeight&&rect.width<=290})()`), true);
+      assert.match(await js(`document.querySelector('#config-preset option[value="${preset}"]').title`), /输出/);
+    }
+    await capture('preset-descriptions.png');
+    window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'ESC' });
+    window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'ESC' });
     await window.reload();
     await waitFor('document.getElementById("config-preflightEnabled")');
+    assert.equal(await js('document.getElementById("config-preset").value'), 'music');
+    await js('document.querySelector(".nav-item[data-view=settings]").click(); document.querySelector("[data-config-key=outputVideo]").click(); document.querySelector(".nav-item[data-view=desk]").click()');
+    assert.equal(await js('document.getElementById("config-preset").value'), '');
+    assert.equal(await js('document.querySelector("#config-preset selectedcontent").textContent'), '自定义配置');
     assert.equal(await js('document.getElementById("config-preflightEnabled").checked'), false);
     assert.equal(await js('document.querySelector("[data-config-key=strictInstrumental]").checked'), false);
     assert.equal(await js('workbenchTest.calls().filter(call=>call.action==="inspect").every(call=>call.config.preflightEnabled===false)'), true);
+    await js('document.querySelector(".nav-item[data-view=about]").click(); workbenchTest.emitUpdate({enabled:true,status:"available",version:"0.2.18",releaseDate:"2026-11-13T00:00:00Z",releaseNotes:"<h2>本版改动</h2><ul><li>保留所选预设</li><li>展示版本说明</li></ul><script>window.notesExecuted=true</script><img src=x onerror=window.notesExecuted=true>"})');
+    assert.match(await js('document.querySelector(".update-notes").textContent'), /• 保留所选预设\n/);
+    assert.equal(await js('Boolean(window.notesExecuted || document.querySelector(".update-notes script, .update-notes img"))'), false);
+    await capture('about-release-notes.png');
+    for (const status of ['downloading', 'downloaded', 'error']) {
+      await js(`workbenchTest.emitUpdate({status:'${status}',percent:25})`);
+      assert.match(await js('document.querySelector(".update-notes").textContent'), /展示版本说明/);
+    }
+    await js('workbenchTest.emitUpdate({status:"available",version:"0.2.19"})');
+    assert.match(await js('document.querySelector(".update-notes").textContent'), /暂未获取到/);
+    assert.doesNotMatch(await js('document.querySelector(".update-panel").textContent'), /保留所选预设|展示版本说明|稳定性改进|版本日期/);
+    await js('workbenchTest.emitUpdate({status:"not-available",version:"",releaseNotes:""})');
+    assert.equal(await js('document.querySelector(".update-notes")'), null);
+    await js('document.querySelector(".nav-item[data-view=desk]").click()');
     await js('document.getElementById("config-preflightEnabled").click(); document.querySelector("[data-config-key=strictInstrumental]").click()');
     await waitFor('!state.preflightPending');
     await js('window.confirm=()=>false; document.querySelector("[data-action=new-batch]").click()');
@@ -234,7 +296,7 @@ app.whenReady().then(async () => {
     assert.equal(await js('document.getElementById("top-start").disabled'), true);
     assert.match(await js('document.getElementById("preflight-content").textContent'), /选择视频目录/);
     assert.equal(errors.length, 0, errors.join('\n'));
-    console.log('Desktop UI checks passed: four switch combinations, all start modes, stale results, persistence, library eligibility, reload recovery, stable media, accessibility and narrow layout.');
+    console.log('Desktop UI checks passed: unified video picker, preset selection, option hover descriptions, release notes, four switch combinations, all start modes, persistence, library eligibility, reload recovery, stable media, accessibility and narrow layout.');
     console.log(`Screenshots: ${screenshots}`);
     window.destroy();
     app.exit(0);

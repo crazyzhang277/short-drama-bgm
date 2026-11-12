@@ -11,6 +11,7 @@ const state = {
   view: 'desk',
   version: '',
   config: {},
+  preset: '',
   defaults: {},
   bundledRuntime: false,
   data: { rows: [], summary: null, warning: null },
@@ -43,11 +44,21 @@ let refreshTimer;
 let liveTimer;
 
 const PRESETS = {
-  preview: { label: '快速预览', transcribe: false, outputAudio: true, outputVideo: false, outputTimeline: true, outputTranscript: false },
-  standard: { label: '标准交付', transcribe: true, outputAudio: true, outputVideo: true, outputTimeline: true, outputTranscript: true },
-  dialogue: { label: '对白优先', transcribe: true, autoDuck: true, duckDb: -16, outputAudio: true, outputVideo: true, outputTimeline: true, outputTranscript: true },
-  music: { label: '纯配乐', transcribe: false, outputAudio: true, outputVideo: false, outputTimeline: true, outputTranscript: false },
+  preview: { label: '快速预览', description: '只输出 BGM 音频（WAV）和选曲时间轴（CSV）；关闭本地转录，便于先检查配乐。', transcribe: false, outputAudio: true, outputVideo: false, outputTimeline: true, outputTranscript: false },
+  standard: { label: '标准交付', description: '开启本地转录，输出最终成片、BGM 音频（WAV）、时间轴（CSV）和转录文本（JSON）。', transcribe: true, outputAudio: true, outputVideo: true, outputTimeline: true, outputTranscript: true },
+  dialogue: { label: '对白优先', description: '开启转录和对白压低（-16 dB），输出成片、BGM 音频、时间轴和转录文本，优先保证对白清晰。', transcribe: true, autoDuck: true, duckDb: -16, outputAudio: true, outputVideo: true, outputTimeline: true, outputTranscript: true },
+  music: { label: '纯配乐', description: '只输出 BGM 音频（WAV）和选曲时间轴（CSV），不生成成片或本地转录；可使用已有字幕。', transcribe: false, outputAudio: true, outputVideo: false, outputTimeline: true, outputTranscript: false },
 };
+
+function selectedPreset() {
+  const preset = PRESETS[state.preset];
+  return preset && Object.entries(preset).every(([key, value]) => ['label', 'description'].includes(key) || state.config[key] === value) ? state.preset : '';
+}
+
+function renderPreset() {
+  const selected = selectedPreset();
+  return `<label for="config-preset">配置预设</label><select id="config-preset" class="select-input"><button type="button"><selectedcontent></selectedcontent></button><option value="" ${selected ? '' : 'selected'}>${state.preset ? '自定义配置' : '选择预设'}</option>${Object.entries(PRESETS).map(([key, preset]) => `<option value="${key}" ${selected === key ? 'selected' : ''} title="${escapeHtml(preset.description)}"><span>${preset.label}</span><small class="preset-description">${escapeHtml(preset.description)}</small></option>`).join('')}</select>`;
+}
 
 function rememberPaths() {
   for (const key of ['videos', 'music', 'output', 'transcripts', 'modelPath']) {
@@ -166,6 +177,8 @@ function updateHTML(id, html) {
 function updateLive() {
   renderChrome();
   if (state.view !== 'desk') return;
+  const preset = document.getElementById('config-preset');
+  if (preset) { preset.value = selectedPreset(); preset.options[0].textContent = state.preset ? '自定义配置' : '选择预设'; }
   updateHTML('metrics', renderMetrics());
   updateHTML('batch-progress', renderProgress());
   updateHTML('preflight-checks', renderPreflightChecks());
@@ -269,7 +282,10 @@ function hasUnreadUpdate() {
 }
 
 function applyUpdateState(update) {
-  if (update && typeof update === 'object') state.update = { ...state.update, ...update };
+  if (update && typeof update === 'object') {
+    if (update.version !== undefined && update.version !== state.update.version) Object.assign(state.update, { releaseNotes: '', releaseDate: '', sizeBytes: 0 });
+    state.update = { ...state.update, ...update };
+  }
 }
 
 function formatUpdateDate(value) {
@@ -277,21 +293,35 @@ function formatUpdateDate(value) {
   return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('zh-CN', { hour12: false });
 }
 
+function renderReleaseNotes() {
+  if (!state.update.version || ['idle', 'checking', 'not-available'].includes(state.update.status)) return '';
+  let notes = state.update.releaseNotes || '';
+  if (/<(?:p|ul|ol|li|div|h[1-6]|br|pre|blockquote)\b/i.test(notes)) {
+    const template = document.createElement('template');
+    template.innerHTML = notes;
+    template.content.querySelectorAll('script, style, iframe, object').forEach((node) => node.remove());
+    template.content.querySelectorAll('li').forEach((node) => node.prepend('• '));
+    template.content.querySelectorAll('p, li, div, h1, h2, h3, h4, h5, h6, br, pre, blockquote').forEach((node) => node.append('\n'));
+    notes = template.content.textContent.trim();
+  }
+  return `<section class="release-notes"><h3>v${escapeHtml(state.update.version)} 更新内容</h3><div class="update-notes" role="region" aria-label="新版改动说明" tabindex="0">${escapeHtml(notes || '暂未获取到此版本的改动说明，可打开下载页面查看。')}</div></section>`;
+}
+
 function renderUpdateCard() {
   const update = state.update;
   const version = escapeHtml(update.version || '—');
-  const notes = escapeHtml(update.releaseNotes || '本次更新包含稳定性改进。');
   const sizeNotice = update.sizeBytes ? `预计安装包 ${formatBytes(update.sizeBytes)}；实际下载量可能因差分更新而变化。` : '下载量以实际下载进度为准。';
-  const statusLabel = ({ idle: '待检查', checking: '检查中', available: '有更新', downloading: '下载中', downloaded: '待安装', installing: '安装中', 'not-available': '已是最新版', error: '需要处理' })[update.status] || '待检查';
+  const statusLabel = !update.enabled && update.status === 'idle' ? '未启用' : ({ idle: '待检查', checking: '检查中', available: '有更新', downloading: '下载中', downloaded: '待安装', installing: '安装中', 'not-available': '已是最新版', error: '需要处理' })[update.status] || '待检查';
   const percent = Math.min(100, Math.max(0, Number(update.percent) || 0));
   const transfer = `${formatBytes(update.transferred)} / ${formatBytes(update.total)}`;
   const speed = update.speed ? ` · ${formatBytes(update.speed)}/秒` : '';
   const checkedAt = formatUpdateDate(update.lastCheckedAt);
+  const releaseDate = formatUpdateDate(update.releaseDate);
   let content;
   if (update.status === 'checking') {
     content = '<strong>正在检查更新…</strong><p>不会影响当前批次和本地文件。</p><div class="update-actions"><button class="button ghost" disabled>检查中</button></div>';
   } else if (update.status === 'available') {
-    content = `<strong>发现新版本</strong><div class="update-version">v${version}</div><p class="update-notes">${notes}</p><p class="config-note">发布于 ${formatUpdateDate(update.releaseDate)} · GitHub Releases</p><p class="config-note">${escapeHtml(sizeNotice)}</p><div class="update-actions"><button class="button primary" data-action="download-update">下载更新</button><button class="button ghost" data-action="open-update-page">查看下载页面</button></div>`;
+    content = `<strong>发现新版本</strong><div class="update-version">v${version}</div><p class="config-note">GitHub Releases${releaseDate === '—' ? '' : ` · 版本日期 ${releaseDate}`}</p><p class="config-note">${escapeHtml(sizeNotice)}</p><div class="update-actions"><button class="button primary" data-action="download-update">下载更新</button><button class="button ghost" data-action="open-update-page">查看下载页面</button></div>`;
   } else if (update.status === 'downloading') {
     content = `<strong>正在下载 v${version}</strong><div class="update-progress" role="progressbar" aria-label="更新下载进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent.toFixed(0)}"><span style="width:${percent}%"></span></div><p class="config-note">${percent.toFixed(0)}% · 已下载 ${transfer}${speed}</p><div class="update-actions"><button class="button ghost" data-action="cancel-update">取消下载</button></div>`;
   } else if (update.status === 'downloaded') {
@@ -307,7 +337,7 @@ function renderUpdateCard() {
   } else {
     content = `<strong>检查更新</strong><p>更新不会影响本地批次和文件。${update.lastCheckedAt ? `上次检查 ${checkedAt}。` : ''}</p><div class="update-actions"><button class="button ghost" data-action="check-update">检查更新</button></div>`;
   }
-  return `<div class="panel update-panel"><div class="panel-head"><strong>更新</strong><span class="update-state-label">${escapeHtml(statusLabel)}</span></div><div class="panel-body update-body" role="status" aria-live="polite">${content}</div></div>`;
+  return `<div class="panel update-panel"><div class="panel-head"><strong>更新</strong><span class="update-state-label">${escapeHtml(statusLabel)}</span></div><div class="panel-body update-body" role="status" aria-live="polite">${content}${renderReleaseNotes()}</div></div>`;
 }
 
 function showToast(message, error = false) {
@@ -321,7 +351,10 @@ function showToast(message, error = false) {
 }
 
 function saveConfig() {
-  try { localStorage.setItem('bgm-studio-config', JSON.stringify(state.config)); } catch { /* local-only convenience */ }
+  try {
+    localStorage.setItem('bgm-studio-config', JSON.stringify(state.config));
+    localStorage.setItem('bgm-studio-preset', state.preset);
+  } catch { /* local-only convenience */ }
 }
 
 function loadConfig(defaults) {
@@ -399,7 +432,7 @@ function configInput(key, label, pickAction) {
 }
 
 function videoConfigInput() {
-  return `<div class="path-row video-path-row" data-drop-key="videos"><label for="config-videos">视频</label><input id="config-videos" class="text-input" data-config-key="videos" list="recent-videos" value="${escapeHtml(state.config.videos || '')}" placeholder="选择或拖入视频 / 目录">${recentOptions('videos')}<button class="pick-button" data-action="choose-videos" aria-label="选择视频目录">⌕</button><button class="pick-button video-file-button" data-action="choose-video-file" aria-label="选择单个视频文件">文件</button></div>`;
+  return `<div class="path-row video-path-row" data-drop-key="videos"><label for="config-videos">视频</label><input id="config-videos" class="text-input" data-config-key="videos" list="recent-videos" value="${escapeHtml(state.config.videos || '')}" placeholder="选择或拖入视频 / 目录">${recentOptions('videos')}<button id="video-source-button" class="pick-button" popovertarget="video-source-menu" aria-haspopup="dialog" aria-label="选择视频目录或单个视频" title="选择视频目录或单个视频">⌕</button><div id="video-source-menu" class="video-source-menu" popover="auto" role="dialog" aria-label="选择视频来源"><button type="button" data-action="choose-videos" autofocus>选择视频目录</button><button type="button" data-action="choose-video-file">选择单个视频</button></div></div>`;
 }
 
 function renderDesk() {
@@ -416,7 +449,7 @@ function renderDesk() {
 <div class="panel"><div class="panel-head"><strong>运行日志</strong><small>最近 100 条 · 自动更新</small></div><div id="run-logs" class="log-box" role="log" aria-label="批次运行日志" aria-live="polite"></div></div>
       </div>
       <aside>
-        <div class="panel"><div class="panel-head"><strong>运行配置</strong><small>路径栏支持拖入与最近记录</small></div><div class="panel-body"><label for="config-preset">配置预设</label><select id="config-preset" class="select-input"><option value="">选择预设</option>${Object.entries(PRESETS).map(([key,preset]) => `<option value="${key}">${preset.label}</option>`).join("")}</select><p class="config-note">预设只修改现有参数；不会更改目录或开启覆盖。</p><div class="drop-zone" tabindex="0" role="region" aria-label="拖放导入">拖入视频、音频或目录自动识别；也可拖到对应路径栏。</div><div class="path-stack">${videoConfigInput()}${configInput('music', '背景音乐', 'choose-music')}<details class="config-details"><summary>自动选曲与音量处理</summary><p>${state.config.strictInstrumental !== false ? "先筛选纯音乐，再匹配情绪和人工强度" : "匹配情绪和人工强度，不按人声状态排除"}，最后减少重复；相近需求连续播放，曲目不足时用中性曲目或留白。</p></details>${configInput('output', '输出', 'choose-output')}${configInput('transcripts', '字幕', 'choose-transcripts')}${state.bundledRuntime ? '' : configInput('modelPath', '模型', 'choose-model')}</div><div class="config-note" id="model-note"><strong>${state.config.transcribe ? (state.config.preflightEnabled === false ? '启动时加载转录模型' : model.exists ? '转录模型可访问' : '转录模型不可访问') : '本地转录未启用'}</strong> · ${escapeHtml(state.bundledRuntime ? '随应用内置' : shortPath(model.path || state.config.modelPath, 42))}<br>${state.config.preflightEnabled === false ? '已跳过模型预检；启动时按当前配置加载' : model.exists ? `${formatBytes(model.sizeBytes)} · ${escapeHtml(state.config.language === 'auto' ? '自动识别' : state.config.language)} · 本机低精度处理` : '勾选本地转录后需要可用的模型目录'}</div><div class="switch-row"><div class="switch-label"><b>本地语音转录</b><small>生成转录文本与时间点，辅助情绪判断</small></div><label class="switch"><input type="checkbox" aria-label="本地语音转录" data-config-key="transcribe" ${state.config.transcribe ? 'checked' : ''}><span></span></label></div><div class="switch-row"><div class="switch-label"><b>BGM 人声/歌词筛选</b><small>${state.config.strictInstrumental !== false ? "检测并排除疑似人声、未确定和分析失败的音乐。" : "不检测、不按人声状态排除；含歌唱、哼唱或口播的音乐也可参与选曲。"}</small></div><label class="switch"><input type="checkbox" aria-label="BGM 人声/歌词筛选" data-config-key="strictInstrumental" ${state.config.strictInstrumental ? 'checked' : ''}><span></span></label></div><div class="switch-row"><div class="switch-label"><b>对白时自动压低背景音乐</b><small>响度处理后执行压低；只在已有对白时间区间生效。</small></div><label class="switch"><input type="checkbox" aria-label="对白时自动压低背景音乐" data-config-key="autoDuck" ${state.config.autoDuck ? 'checked' : ''}><span></span></label></div><div class="switch-row"><div class="switch-label"><b>允许覆盖已有结果</b><small>默认保护手工文件，恢复运行无需覆盖</small></div><label class="switch"><input type="checkbox" aria-label="允许覆盖已有结果" data-config-key="overwrite" ${state.config.overwrite ? 'checked' : ''}><span></span></label></div><details class="config-details"><summary>高级音频参数</summary><div class="advanced-grid"><div class="field"><label for="config-fadeIn">淡入时长</label><input id="config-fadeIn" class="number-input" data-config-key="fadeIn" type="number" min="0" step=".1" value="${escapeHtml(state.config.fadeIn)}"></div><div class="field"><label for="config-fadeOut">淡出时长</label><input id="config-fadeOut" class="number-input" data-config-key="fadeOut" type="number" min="0" step=".1" value="${escapeHtml(state.config.fadeOut)}"></div><div class="field"><label for="config-freezeTail">片尾定格（秒:帧）</label><input id="config-freezeTail" class="text-input" data-config-key="freezeTail" type="text" inputmode="numeric" placeholder="0:00" value="${escapeHtml(state.config.freezeTail)}"><small class="field-note">例：2:15 表示 2 秒 15 帧，按输入视频帧率换算</small></div></div></details></div></div>
+        <div class="panel"><div class="panel-head"><strong>运行配置</strong><small>路径栏支持拖入与最近记录</small></div><div class="panel-body">${renderPreset()}<p class="config-note">预设只修改现有参数；不会更改目录或开启覆盖。</p><div class="drop-zone" tabindex="0" role="region" aria-label="拖放导入">拖入视频、音频或目录自动识别；也可拖到对应路径栏。</div><div class="path-stack">${videoConfigInput()}${configInput('music', '背景音乐', 'choose-music')}<details class="config-details"><summary>自动选曲与音量处理</summary><p>${state.config.strictInstrumental !== false ? "先筛选纯音乐，再匹配情绪和人工强度" : "匹配情绪和人工强度，不按人声状态排除"}，最后减少重复；相近需求连续播放，曲目不足时用中性曲目或留白。</p></details>${configInput('output', '输出', 'choose-output')}${configInput('transcripts', '字幕', 'choose-transcripts')}${state.bundledRuntime ? '' : configInput('modelPath', '模型', 'choose-model')}</div><div class="config-note" id="model-note"><strong>${state.config.transcribe ? (state.config.preflightEnabled === false ? '启动时加载转录模型' : model.exists ? '转录模型可访问' : '转录模型不可访问') : '本地转录未启用'}</strong> · ${escapeHtml(state.bundledRuntime ? '随应用内置' : shortPath(model.path || state.config.modelPath, 42))}<br>${state.config.preflightEnabled === false ? '已跳过模型预检；启动时按当前配置加载' : model.exists ? `${formatBytes(model.sizeBytes)} · ${escapeHtml(state.config.language === 'auto' ? '自动识别' : state.config.language)} · 本机低精度处理` : '勾选本地转录后需要可用的模型目录'}</div><div class="switch-row"><div class="switch-label"><b>本地语音转录</b><small>生成转录文本与时间点，辅助情绪判断</small></div><label class="switch"><input type="checkbox" aria-label="本地语音转录" data-config-key="transcribe" ${state.config.transcribe ? 'checked' : ''}><span></span></label></div><div class="switch-row"><div class="switch-label"><b>BGM 人声/歌词筛选</b><small>${state.config.strictInstrumental !== false ? "检测并排除疑似人声、未确定和分析失败的音乐。" : "不检测、不按人声状态排除；含歌唱、哼唱或口播的音乐也可参与选曲。"}</small></div><label class="switch"><input type="checkbox" aria-label="BGM 人声/歌词筛选" data-config-key="strictInstrumental" ${state.config.strictInstrumental ? 'checked' : ''}><span></span></label></div><div class="switch-row"><div class="switch-label"><b>对白时自动压低背景音乐</b><small>响度处理后执行压低；只在已有对白时间区间生效。</small></div><label class="switch"><input type="checkbox" aria-label="对白时自动压低背景音乐" data-config-key="autoDuck" ${state.config.autoDuck ? 'checked' : ''}><span></span></label></div><div class="switch-row"><div class="switch-label"><b>允许覆盖已有结果</b><small>默认保护手工文件，恢复运行无需覆盖</small></div><label class="switch"><input type="checkbox" aria-label="允许覆盖已有结果" data-config-key="overwrite" ${state.config.overwrite ? 'checked' : ''}><span></span></label></div><details class="config-details"><summary>高级音频参数</summary><div class="advanced-grid"><div class="field"><label for="config-fadeIn">淡入时长</label><input id="config-fadeIn" class="number-input" data-config-key="fadeIn" type="number" min="0" step=".1" value="${escapeHtml(state.config.fadeIn)}"></div><div class="field"><label for="config-fadeOut">淡出时长</label><input id="config-fadeOut" class="number-input" data-config-key="fadeOut" type="number" min="0" step=".1" value="${escapeHtml(state.config.fadeOut)}"></div><div class="field"><label for="config-freezeTail">片尾定格（秒:帧）</label><input id="config-freezeTail" class="text-input" data-config-key="freezeTail" type="text" inputmode="numeric" placeholder="0:00" value="${escapeHtml(state.config.freezeTail)}"><small class="field-note">例：2:15 表示 2 秒 15 帧，按输入视频帧率换算</small></div></div></details></div></div>
         <div class="panel" id="selected-episode-panel">${renderSelectedEpisode()}</div>
       </aside>
     </div>
@@ -672,6 +705,7 @@ document.addEventListener('click', async (event) => {
   const target = event.target.closest('[data-action]');
   if (!target) return;
   const action = target.dataset.action;
+  target.closest('[popover]')?.hidePopover();
   try {
     if (action === 'set-view') {
       state.view = target.dataset.view;
@@ -841,7 +875,8 @@ document.addEventListener('change', (event) => {
   if (event.target.id === 'config-preset') {
     const preset = PRESETS[event.target.value];
     if (!preset) return;
-    const { label, ...config } = preset;
+    state.preset = event.target.value;
+    const { label, description, ...config } = preset;
     Object.assign(state.config, config);
     saveConfig();
     refresh(true);
@@ -965,6 +1000,8 @@ api.onUpdateEvent((update) => {
     state.defaults = info.defaults || {};
     state.bundledRuntime = Boolean(info.bundledRuntime);
     state.config = loadConfig(state.defaults);
+    try { state.preset = localStorage.getItem('bgm-studio-preset') || ''; } catch { /* local-only convenience */ }
+    if (!PRESETS[state.preset]) state.preset = '';
     if (!state.run || !info.run || (info.run.estimatedAt || 0) >= (state.run.estimatedAt || 0)) {
       state.running = Boolean(info.running);
       state.run = info.run || null;

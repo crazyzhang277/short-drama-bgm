@@ -23,8 +23,8 @@ contextBridge.exposeInMainWorld('bgmStudio', {
   episodeDetail: async () => fixture.detail,
   startBatch: async (config) => { calls.push({ action: 'start', config }); return { started: true, run: fixture.info.run }; },
   stopBatch: async () => { calls.push({ action: 'stop' }); return { stopped: true }; },
-  chooseDirectory: async () => null,
-  chooseVideoFile: async () => null,
+  chooseDirectory: async (title) => { calls.push({ action: 'choose-directory', title }); return fixture.pickedPath || null; },
+  chooseVideoFile: async () => { calls.push({ action: 'choose-video-file' }); return fixture.pickedPath || null; },
   getPathForFile: () => fixture.info.defaults.videos,
   resolveImport: async (input) => ({ key: input.key || 'videos', path: input.path }),
   checkMusicLibrary: async (config) => {
@@ -65,4 +65,5 @@ contextBridge.exposeInMainWorld('workbenchTest', {
   releaseInspect: () => { finishInspect?.(); finishInspect = null; },
   unknownLibrary: () => { for (const file of fixture.library.files) Object.assign(file, { status: 'unknown', eligible: false }); },
   calls: () => calls,
+  pickPath: (value) => { fixture.pickedPath = value; },
 });

@@ -148,3 +148,56 @@ test('disabled update service never calls updater', async () => {
   assert.equal(updater.downloadCalls, 0);
   assert.equal(service.getState().status, 'idle');
 });
+
+test('missing release notes are fetched for the offered version and survive download events', async (t) => {
+  const requests = [];
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    requests.push({ url, options });
+    return { ok: true, json: async () => ({ tag_name: 'v0.2.17', body: '- 修复预设显示\n- 展示新版改动' }) };
+  });
+  const updater = new FakeUpdater();
+  updater.checkForUpdates = async () => updater.emit('update-available', { version: '0.2.17', files: [{ size: 123 }] });
+  const service = createUpdateService({ updater, currentVersion: '0.2.16' });
+  await service.check({ manual: true });
+  assert.equal(requests.length, 1);
+  assert.match(requests[0].url, /\/releases\/tags\/v0\.2\.17$/);
+  assert.ok(requests[0].options.signal instanceof AbortSignal);
+  assert.equal(service.getState().releaseNotes, '- 修复预设显示\n- 展示新版改动');
+  updater.emit('update-cancelled', { version: '0.2.17' });
+  updater.emit('update-downloaded', { version: '0.2.17' });
+  assert.equal(service.getState().releaseNotes, '- 修复预设显示\n- 展示新版改动');
+  assert.equal(service.getState().sizeBytes, 123);
+  updater.emit('update-downloaded', { version: '0.2.18' });
+  assert.equal(service.getState().releaseNotes, '');
+  assert.equal(service.getState().sizeBytes, 0);
+});
+
+test('release notes failures and mismatched releases do not block an available update', async (t) => {
+  for (const response of [new Error('offline'), { ok: false }, ...[{ tag_name: 'v9.9.9' }, { tag_name: 'v0.2.17', draft: true }, { tag_name: 'v0.2.17', prerelease: true }].map((release) => ({ ok: true, json: async () => ({ ...release, body: 'wrong release' }) }))]) {
+    t.mock.method(globalThis, 'fetch', async () => { if (response instanceof Error) throw response; return response; });
+    const updater = new FakeUpdater();
+    updater.checkForUpdates = async () => updater.emit('update-available', { version: '0.2.17' });
+    const service = createUpdateService({ updater, currentVersion: '0.2.16' });
+    await service.check({ manual: true });
+    assert.equal(service.getState().status, 'available');
+    assert.equal(service.getState().releaseNotes, '');
+    assert.equal(service.getState().errorMessage, '');
+    service.dispose();
+    t.mock.restoreAll();
+  }
+});
+
+test('a delayed notes response cannot replace the newly offered version notes', async (t) => {
+  let finish;
+  t.mock.method(globalThis, 'fetch', () => new Promise((resolve) => { finish = resolve; }));
+  const updater = new FakeUpdater();
+  updater.checkForUpdates = async () => updater.emit('update-available', { version: '0.2.17' });
+  const service = createUpdateService({ updater, currentVersion: '0.2.16' });
+  const checking = service.check({ manual: true });
+  await new Promise((resolve) => setImmediate(resolve));
+  updater.emit('update-available', { version: '0.2.18', releaseNotes: '只属于 0.2.18' });
+  finish({ ok: true, json: async () => ({ tag_name: 'v0.2.17', body: '旧说明' }) });
+  await checking;
+  assert.equal(service.getState().version, '0.2.18');
+  assert.equal(service.getState().releaseNotes, '只属于 0.2.18');
+});
