@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { episodeDetail, getInfo, inspectBatch, startBatch, stopBatch } = require('../desktop/backend/batch-service');
+const { checkMusicLibrary, diagnostics, episodeDetail, getInfo, inspectBatch, resolveImport, startBatch, stopBatch } = require('../desktop/backend/batch-service');
 
 test('desktop batch service reads queue and links timeline/transcript artifacts', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bgm-desktop-service-'));
@@ -21,7 +21,8 @@ test('desktop batch service reads queue and links timeline/transcript artifacts'
     },
   } }), 'utf8');
 
-  const batch = await inspectBatch({ videos, output, music: '' });
+  const batch = await inspectBatch({ videos, output, music: '', createAudioClassifier() {} });
+  assert.doesNotThrow(() => structuredClone(batch));
   assert.equal(batch.rows.length, 1);
   assert.equal(batch.rows[0].status, 'completed');
   const detail = await episodeDetail({ output, episode: '第1集' });
@@ -81,7 +82,7 @@ test('desktop defaults use packaged model and media-tool paths', () => {
   const developmentInfo = getInfo();
   assert.equal(developmentInfo.defaults.videos, '');
   assert.equal(developmentInfo.defaults.music, '');
-  assert.equal(developmentInfo.defaults.modelPath, 'small');
+  assert.equal(developmentInfo.defaults.modelPath, process.env.FASTER_WHISPER_MODEL || 'small');
   assert.match(developmentInfo.defaults.output, /Documents[\\/]自动配 BGM Studio[\\/]output$/);
   const info = getInfo({ modelPath: 'C:\\app\\resources\\model\\small', ffmpeg: 'C:\\app\\resources\\ffmpeg\\ffmpeg.exe', ffprobe: 'C:\\app\\resources\\ffmpeg\\ffprobe.exe', transcriberExecutable: 'C:\\app\\resources\\transcriber\\bgm-transcriber.exe' });
   assert.equal(info.bundledRuntime, true);
@@ -92,7 +93,8 @@ test('desktop defaults use packaged model and media-tool paths', () => {
   assert.equal(info.defaults.music, '');
   assert.match(info.defaults.output, /Documents[\\/]自动配 BGM Studio[\\/]output$/);
   assert.equal(info.defaults.maxTracksPerEpisode, 3);
-  assert.equal(info.defaults.minTracksPerEpisode, 2);
+  assert.equal(info.defaults.minTracksPerEpisode, 1);
+  assert.equal(info.defaults.scenePriority, true);
   assert.equal(info.defaults.outputAudio, true);
   assert.equal(info.defaults.outputVideo, true);
   assert.equal(info.defaults.outputTimeline, true);
@@ -103,12 +105,73 @@ test('desktop defaults use packaged model and media-tool paths', () => {
   assert.equal('transcriberExecutable' in info.defaults, false);
 });
 
+test('preflight counts current inputs and identifies interrupted state after restart', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bgm-preflight-counts-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const video = path.join(root, 'episode.mp4');
+  const music = path.join(root, 'music');
+  await fs.mkdir(music);
+  await fs.writeFile(video, 'placeholder');
+  await fs.writeFile(path.join(root, '.mvp-state.json'), JSON.stringify({ episodes: { [video]: { episode: 'episode', status: 'processing', videoPath: video } } }));
+  const info = await inspectBatch({ videos: video, music, output: root, transcribe: false });
+  assert.equal(info.inputVideoCount, 1);
+  assert.equal(info.rows[0].status, 'interrupted');
+  assert.match(info.rows[0].error, /继续未完成/);
+  assert.equal(typeof info.tools.ffmpeg.available, 'boolean');
+  const health = await checkMusicLibrary({ music });
+  assert.equal(health.total, 0);
+  assert.equal(health.usable, 0);
+});
+
+test('drag import identifies media and honours explicit path roles', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bgm-import-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const video = path.join(root, 'episode.mp4');
+  const track = path.join(root, 'track.wav');
+  await Promise.all([fs.writeFile(video, ''), fs.writeFile(track, '')]);
+  assert.deepEqual(await resolveImport({ path: video }), { key: 'videos', path: video });
+  assert.deepEqual(await resolveImport({ path: track }), { key: 'music', path: root });
+  assert.deepEqual(await resolveImport({ path: root, key: 'output' }), { key: 'output', path: root });
+  await assert.rejects(resolveImport({ path: video, key: 'modelPath' }), /请拖入对应目录/);
+  await assert.rejects(resolveImport({ path: root, key: '__proto__' }), /用途无效/);
+});
+
+test('diagnostics omit private paths, names, arbitrary config, and raw errors', async () => {
+  const secret = 'PRIVATE_PERSON_video_and_music';
+  const text = await diagnostics({ videos: `C:\\Users\\${secret}\\private.mp4`, music: `/home/${secret}/music`, modelPath: `/home/${secret}/model`, unexpected: secret, freezeTail: secret, language: secret });
+  assert.equal(text.includes(secret), false);
+  assert.equal(text.includes('private.mp4'), false);
+  const info = JSON.parse(text);
+  assert.equal(info.路径配置.videos, true);
+  assert.equal(info.转录模型.ready, false);
+});
+
+test('concurrent starts share a lock and reload info retains run configuration', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bgm-run-lock-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const events = [];
+  const config = { videos: root, music: root, output: root, transcribe: false, scenePriority: false };
+  const first = startBatch(config, (event) => events.push(event));
+  await assert.rejects(startBatch(config), /已有批次/);
+  await first;
+  assert.equal(getInfo().running, true);
+  assert.equal(getInfo().run.config.output, root);
+  assert.equal(getInfo().run.config.scenePriority, false);
+  assert.equal(getInfo().logs.length, 1);
+  stopBatch();
+  for (let n = 0; n < 100 && getInfo().running; n += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(getInfo().running, false);
+  assert.equal(getInfo().run.status, 'stopped');
+  assert.equal(events.at(-1).type, 'stopped');
+});
+
 test('desktop batch settings reject invalid BGM caps and empty output selection', async () => {
   const base = { videos: 'videos', music: 'music', output: 'output', transcribe: false };
   await assert.rejects(startBatch({ ...base, minTracksPerEpisode: 0 }, () => {}), /每集 BGM 下限必须是正整数/);
-  await assert.rejects(startBatch({ ...base, minTracksPerEpisode: 3, maxTracksPerEpisode: 2 }, () => {}), /每集 BGM 下限不能高于上限/);
+  await assert.rejects(startBatch({ ...base, scenePriority: false, minTracksPerEpisode: 3, maxTracksPerEpisode: 2 }, () => {}), /每集 BGM 下限不能高于上限/);
   await assert.rejects(startBatch({ ...base, maxTracksPerEpisode: 2.5 }, () => {}), /每集 BGM 上限必须是非负整数/);
   await assert.rejects(startBatch({ ...base, transitionFadeEnabled: 'false' }, () => {}), /曲目衔接淡入淡出必须使用开关值/);
+  await assert.rejects(startBatch({ ...base, scenePriority: 'false' }, () => {}), /转场必换曲必须使用开关值/);
   await assert.rejects(startBatch({ ...base, skipCompleted: 'false' }, () => {}), /跳过已完成必须使用开关值/);
   await assert.rejects(startBatch({ ...base, transitionFadeDuration: -0.1 }, () => {}), /曲目衔接时长必须是非负数字/);
   await assert.rejects(startBatch({ ...base, transitionFadeDuration: 'invalid' }, () => {}), /曲目衔接时长必须是非负数字/);

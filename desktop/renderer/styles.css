@@ -310,3 +310,79 @@ body { font-size: 14px; }
 @media (prefers-reduced-motion: reduce) {
   .update-dot, .update-progress span { transition: none; }
 }
+
+/* 右侧审阅栏独立滚动，避免视频预览变大后遮住下方的音乐书签和试听区。 */
+.transcript-side {
+  position: sticky;
+  top: 16px;
+  min-height: 0;
+  max-height: calc(100vh - 180px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding-right: 4px;
+}
+.video-review { position: static; }
+@media (max-width: 1000px) {
+  .transcript-side {
+    position: static;
+    max-height: none;
+    overflow: visible;
+    padding-right: 0;
+  }
+}
+@media (max-height: 720px) and (min-width: 1001px) {
+  .transcript-side { max-height: calc(100vh - 145px); }
+  .review-video { max-height: min(52vh, 380px); }
+}
+
+[hidden] { display: none !important; }
+.progress-panel { margin-bottom: 18px; }
+.progress-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; }
+.progress-heading span, .progress-panel p { color: var(--muted); font-size: 13px; }
+.batch-progress { height: 10px; margin-top: 14px; border-radius: 6px; overflow: hidden; background: var(--panel-3); }
+.batch-progress span { display: block; height: 100%; background: var(--cyan); transition: width .2s ease; }
+.recovery-actions, .artifact-actions, .media-tabs { display: flex; flex-wrap: wrap; gap: 8px; }
+.recovery-actions { padding: 0 17px 17px; }
+.preflight-row { display: grid; grid-template-columns: 70px minmax(0, 1fr) auto; padding-bottom: 8px; }
+.preflight-state { overflow-wrap: anywhere; font-size: 13px; }
+.preflight-state.unavailable, .error-text { color: var(--red); }
+.library-health { max-height: 260px; overflow: auto; font-size: 13px; overflow-wrap: anywhere; }
+.library-health ul:empty { display: none; }
+.queue-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 12px; }
+.queue-toolbar .text-input { flex: 1; width: 120px; min-width: 100px; }
+.select-input { min-height: 39px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 5px; font: inherit; }
+#config-preset { width: 100%; margin-top: 8px; }
+.queue-scroll { overflow-x: auto; }
+.episode-sub { overflow-wrap: anywhere; }
+.drop-zone { margin: 12px 0; padding: 12px; border: 1px dashed var(--cyan); border-radius: 5px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+[data-drop-key] { border-radius: 5px; }
+.track-block { text-align: left; cursor: pointer; }
+.track-block:focus-visible { z-index: 4; }
+.playhead { top: 0; z-index: 5; }
+.media-tabs { margin-top: 12px; }
+.media-tabs [aria-pressed="true"] { border-color: var(--cyan); color: var(--cyan); background: var(--panel-2); }
+.artifact-actions { margin-top: 12px; }
+.preview-heading { flex-wrap: wrap; }
+.preview-heading span { font-size: 11px; }
+.inspector { min-width: 0; }
+.inspector-row b { overflow-wrap: anywhere; }
+#diagnostics-dialog { width: min(720px, 92vw); border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); padding: 24px; }
+#diagnostics-dialog::backdrop { background: rgba(20,35,46,.4); }
+#diagnostic-text { display: block; width: 100%; height: min(50vh, 420px); margin: 12px 0; border: 1px solid var(--line); padding: 12px; resize: vertical; }
+@media (max-width: 1000px) { .progress-heading { align-items: start; } }
+@media (max-width: 760px) {
+  .sidebar { width: auto; }
+  .preflight-row { grid-template-columns: 60px minmax(0, 1fr); }
+  .preflight-row .button { grid-column: 2; justify-self: start; }
+  .advanced-grid { grid-template-columns: minmax(0, 1fr); }
+  .topbar { height: auto; min-height: 60px; flex-basis: auto; flex-wrap: wrap; gap: 8px; padding-top: 8px; padding-bottom: 8px; }
+  .top-actions { flex-wrap: wrap; }
+  .inspector .review-video { max-height: 45vh; }
+}
+@media (prefers-reduced-motion: reduce) { .batch-progress span { transition: none; } }
+/* Library review reuses the workbench controls and stays inside the preflight panel. */
+.library-track-list { max-height: 420px; overflow: auto; margin-top: 10px; }
+.library-track { border-top: 1px solid var(--border, #dce3ea); padding: 10px 0; overflow-wrap: anywhere; }
+.library-track audio { width: 100%; margin: 6px 0; }
+.library-track summary { cursor: pointer; }

@@ -24,10 +24,11 @@
         <div class="breadcrumb"><span>工作台</span><i>/</i><strong id="top-title">批次控制台</strong></div>
         <div class="top-actions"><span class="offline-badge"><span class="pulse-dot"></span>本地 · 离线</span><button class="icon-button" title="刷新" data-action="refresh">↻</button><button class="icon-button" title="最大化 / 还原" aria-label="最大化或还原工作台" data-action="toggle-maximize">⛶</button><button class="button primary compact" data-action="start" id="top-start">开始批次</button></div>
       </header>
-      <div id="screen" class="screen" aria-live="polite"></div>
+      <div id="screen" class="screen"></div>
     </main>
   </div>
   <div id="toast" class="toast" role="status"></div>
+  <dialog id="diagnostics-dialog" aria-labelledby="diagnostics-title"><h2 id="diagnostics-title">诊断信息预览</h2><p>已省略私人路径、素材文件名、转录内容和原始错误文本。</p><label for="diagnostic-text">将复制的内容</label><textarea id="diagnostic-text" readonly></textarea><div class="header-actions"><button class="button primary" id="copy-diagnostics" data-action="copy-diagnostics">复制脱敏信息</button><button class="button ghost" data-action="close-diagnostics">关闭</button></div></dialog>
   <script src="./renderer.js"></script>
 </body>
 </html>

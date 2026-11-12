@@ -28,15 +28,17 @@ def main() -> None:
         str(Path(args.input)),
         language=language,
         vad_filter=True,
-        word_timestamps=False,
+        word_timestamps=True,
     )
     result = [
-        {"start": float(segment.start), "end": float(segment.end), "text": segment.text.strip()}
+        {"start": float(segment.start), "end": float(segment.end), "text": segment.text.strip(),
+         "words": [{"start": float(word.start), "end": float(word.end), "word": word.word,
+                    "probability": float(word.probability)} for word in (segment.words or []) if word.end > word.start]}
         for segment in segments
         if segment.end > segment.start
     ]
     Path(args.output).write_text(
-        json.dumps({"provider": "faster-whisper", "language": info.language, "language_probability": info.language_probability, "segments": result}, ensure_ascii=False, indent=2),
+        json.dumps({"provider": "faster-whisper", "analysis_version": "words-v1", "word_timestamps": True, "language": info.language, "language_probability": info.language_probability, "segments": result}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 

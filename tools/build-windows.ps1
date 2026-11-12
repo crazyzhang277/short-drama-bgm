@@ -1,6 +1,8 @@
+param([switch]$Preview)
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Set-Location $root
+New-Item -ItemType Directory -Force -Path (Join-Path $root 'build') | Out-Null
 
 function Get-Sha256([string]$path) {
   $stream = [IO.File]::OpenRead($path)
@@ -8,6 +10,20 @@ function Get-Sha256([string]$path) {
   try { return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant() }
   finally { $stream.Dispose(); $sha.Dispose() }
 }
+
+$audioTarget = Join-Path $root 'runtime\audio'
+New-Item -ItemType Directory -Force -Path $audioTarget | Out-Null
+$audioModel = Join-Path $audioTarget 'yamnet.tflite'
+if (-not (Test-Path -LiteralPath $audioModel)) {
+  Invoke-WebRequest -Uri 'https://storage.googleapis.com/mediapipe-models/audio_classifier/yamnet/float32/1/yamnet.tflite' -OutFile $audioModel
+}
+if ((Get-Sha256 $audioModel) -ne '4d8b4a53282dc83ef04e3e7dbc4fbc98082e34e44ed798e16c3a0cdd4c584faf') { throw 'YAMNet model hash mismatch; refusing to package unverified weights.' }
+Set-Content -LiteralPath (Join-Path $audioTarget 'SOURCE.txt') -Encoding UTF8 -Value @(
+  'YAMNet float32/1, Apache-2.0',
+  'Source: https://storage.googleapis.com/mediapipe-models/audio_classifier/yamnet/float32/1/yamnet.tflite',
+  'SHA256: 4d8b4a53282dc83ef04e3e7dbc4fbc98082e34e44ed798e16c3a0cdd4c584faf',
+  'Runtime: @mediapipe/tasks-audio 1.2.2, Apache-2.0; all requests restricted to local assets'
+)
 
 $modelSource = $env:FASTER_WHISPER_MODEL
 if (-not $modelSource) {
@@ -96,7 +112,12 @@ foreach ($runtimeFile in @('runtime\ffmpeg\ffmpeg.exe', 'runtime\ffmpeg\ffprobe.
 $ffmpegVersion = & (Join-Path $root 'runtime\ffmpeg\ffmpeg.exe') -version
 if ($LASTEXITCODE -ne 0) { throw 'Bundled FFmpeg failed its startup check.' }
 $ffmpegVersion | Select-Object -First 1
-& $builder --win
+if ($Preview) {
+  & $builder --win --dir --publish never --config.extraMetadata.bgmPreview=true --config.directories.output=release
+  if ($LASTEXITCODE -ne 0) { throw "desktop preview build failed (exit code $LASTEXITCODE)" }
+  exit 0
+}
+& $builder --win --publish never
 if ($LASTEXITCODE -ne 0) { throw "desktop installer build failed (exit code $LASTEXITCODE)" }
 
 $latest = Join-Path $root 'release\latest.yml'

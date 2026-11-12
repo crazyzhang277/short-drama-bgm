@@ -4,11 +4,13 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { createHash } = require('node:crypto');
+const { filterLibrary, readLibrary, writeLibrary, ANALYSIS_VERSION, ANALYSIS_SETTINGS, MODEL_SHA256 } = require('./music-library');
 
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.mkv', '.webm', '.avi', '.m4v']);
 const AUDIO_EXTENSIONS = new Set(['.wav', '.mp3', '.m4a', '.aac', '.flac', '.ogg', '.opus']);
 const DEFAULT_MOOD = '默认';
-const STATE_VERSION = 13;
+const STATE_VERSION = 14;
+const PLANNING_VERSION = 'scene-required-with-mood-v4';
 
 const MOOD_RULES = [
   { mood: '紧张', words: ['危险', '追杀', '逃跑', '快跑', '小心', '冲突', '打架', '绑架', '枪', '杀', '来不及', '怎么办', '救命', '别过来', 'danger', 'chase', 'run away', 'hurry', 'hurry up', 'careful', 'kidnap', 'kidnapped', 'gun', 'kill', 'killed', 'fight', 'fighting', "we're running out of time", 'what do we do', "don't come", "i'm scared", "i'm afraid", 'please help', 'help me', 'get out of here', 'we have to go', "they're coming", "we're trapped"] },
@@ -24,7 +26,7 @@ const MOOD_RULES = [
 ];
 
 function usage() {
-  return `用法:\n  node src/cli.js --videos <视频文件或目录> --music <BGM目录> --output <输出目录> [选项]\n\n选项:\n  --transcripts <目录>  读取与视频同名的 JSON 字幕时间段\n  --transcribe           调用 tools/transcribe.py + faster-whisper（需另行安装 Python/依赖）\n  --mood <标签>          覆盖自动情绪判断，必须匹配 BGM 子目录\n  --duck-db <-10>        对白时 BGM 增益，默认 -10\n  --freeze-tail <秒:帧>  片尾定格时长，定格期间不铺 BGM，默认 0:00\n  --fade-in <秒>         首部淡入，默认 2\n  --fade-out <秒>        尾部淡出，默认 2\n  --overwrite            明确允许覆盖已有输出\n  --ffmpeg <路径>        指定 ffmpeg 可执行文件\n  --ffprobe <路径>       指定 ffprobe 可执行文件\n  --help                 显示帮助\n\n输出文件: <集名>_final.<原视频扩展名>（原视频画面 + 原音 + BGM）、_bgm.wav、_timeline.csv、_transcript.json。\nBGM 目录约定:\n  BGM/悬疑/*.mp3   BGM/紧张/*.wav   BGM/默认/*.mp3\n  也支持直接放在 BGM/ 根目录，根目录曲目视为“默认”。`;
+  return `用法:\n  node src/cli.js --videos <视频文件或目录> --music <BGM目录> --output <输出目录> [选项]\n\n选项:\n  --transcripts <目录>  读取与视频同名的 JSON 字幕时间段\n  --transcribe           调用 tools/transcribe.py + faster-whisper（需另行安装 Python/依赖）\n  --mood <标签>          覆盖自动情绪判断，必须匹配 BGM 子目录\n  --allow-unverified-music  允许未确认曲目（默认严格纯音乐，首次分析请用桌面版）\n  --no-auto-duck         关闭默认开启的对白压低\n  --duck-db <-10>        对白时 BGM 增益，默认 -10\n  --freeze-tail <秒:帧>  片尾定格时长，定格期间不铺 BGM，默认 0:00\n  --fade-in <秒>         首部淡入，默认 2\n  --fade-out <秒>        尾部淡出，默认 2\n  --overwrite            明确允许覆盖已有输出\n  --ffmpeg <路径>        指定 ffmpeg 可执行文件\n  --ffprobe <路径>       指定 ffprobe 可执行文件\n  --help                 显示帮助\n\n输出文件: <集名>_final.<原视频扩展名>（原视频画面 + 原音 + BGM）、_bgm.wav、_timeline.csv、_transcript.json。\nBGM 目录约定:\n  BGM/悬疑/*.mp3   BGM/紧张/*.wav   BGM/默认/*.mp3\n  也支持直接放在 BGM/ 根目录，根目录曲目视为“默认”。`;
 }
 
 function parseArgs(argv) {
@@ -35,7 +37,8 @@ function parseArgs(argv) {
     transcripts: null,
     transcribe: false,
     mood: null,
-    autoDuck: false,
+    autoDuck: true,
+    strictInstrumental: true,
     duckDb: -10,
     freezeTail: '0:00',
     fadeIn: 2,
@@ -48,6 +51,8 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--help' || arg === '-h') return { help: true };
+    if (arg === '--allow-unverified-music') { options.strictInstrumental = false; continue; }
+    if (arg === '--no-auto-duck') { options.autoDuck = false; continue; }
     if (arg === '--transcribe' || arg === '--overwrite' || arg === '--auto-duck') {
       options[arg.slice(2).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())] = true;
       continue;
@@ -193,7 +198,7 @@ async function probeMedia(filePath, ffprobe, signal) {
     hasVideo: streams.some((stream) => stream.codec_type === 'video'),
   };
 }
-async function inspectMusicCatalog(groups, ffprobe, ffmpeg, signal, state) {
+async function inspectMusicCatalog(groups, ffprobe, ffmpeg, signal, state, allowEmpty = false) {
   const files = [...groups.values()].flatMap((tracks) => tracks);
   const checked = new Map();
   let cursor = 0;
@@ -202,43 +207,51 @@ async function inspectMusicCatalog(groups, ffprobe, ffmpeg, signal, state) {
     while (cursor < files.length) {
       const file = files[cursor++];
       const filePath = normalizePath(file);
-      const stat = await fs.stat(file);
-      const fingerprint = 'sample5s-v1:' + stat.size + ':' + stat.mtimeMs;
-      let playable = state.musicCatalog[filePath]?.fingerprint === fingerprint
-        ? state.musicCatalog[filePath].playable
-        : null;
-      if (playable === null) {
-        try {
-          const info = await probeMedia(file, ffprobe, signal);
-          if (info.hasAudio) {
-            const sampleDuration = Math.min(5, info.duration);
-            const sampleStart = Math.max(0, (info.duration - sampleDuration) / 2);
-            const { stderr } = await runProcess(ffmpeg, [
-              '-hide_banner', '-nostats', '-ss', formatNumber(sampleStart), '-i', file,
-              '-t', formatNumber(sampleDuration), '-af', 'volumedetect', '-f', 'null', '-',
-            ], { signal });
-            const mean = stderr.match(/mean_volume:\s*(-?[\d.]+)\s*dB/);
-            const peak = stderr.match(/max_volume:\s*(-?[\d.]+)\s*dB/);
-            playable = Boolean(mean && peak && Number.isFinite(Number(mean[1])) && Number(mean[1]) > -90 && Number.isFinite(Number(peak[1])));
-          } else {
-            playable = false;
+      let entry;
+      try {
+        const stat = await fs.stat(file);
+        const fingerprint = 'sample5s-v2:' + stat.size + ':' + stat.mtimeMs;
+        entry = state.musicCatalog[filePath]?.fingerprint === fingerprint ? state.musicCatalog[filePath] : null;
+        if (!entry) {
+          entry = { fingerprint, playable: false, duration: null, reason: '' };
+          try {
+            const info = await probeMedia(file, ffprobe, signal);
+            entry.duration = info.duration;
+            if (info.hasAudio) {
+              // shortcut: sample the middle five seconds for silence; use full-track analysis if quiet intros/outros need separate validation.
+              const sampleDuration = Math.min(5, info.duration);
+              const sampleStart = Math.max(0, (info.duration - sampleDuration) / 2);
+              const { stderr } = await runProcess(ffmpeg, [
+                '-hide_banner', '-nostats', '-ss', formatNumber(sampleStart), '-i', file,
+                '-t', formatNumber(sampleDuration), '-af', 'volumedetect', '-f', 'null', '-',
+              ], { signal });
+              const mean = stderr.match(/mean_volume:\s*(-?[\d.]+)\s*dB/);
+              const peak = stderr.match(/max_volume:\s*(-?[\d.]+)\s*dB/);
+              entry.playable = Boolean(mean && peak && Number.isFinite(Number(mean[1])) && Number(mean[1]) > -70 && Number.isFinite(Number(peak[1])));
+              entry.reason = entry.playable ? '' : '近似静音';
+            } else {
+              entry.reason = '没有音频流';
+            }
+          } catch (error) {
+            if (signal?.aborted || error.code === 'ENOENT') throw error;
+            entry.reason = '无法解码或读取';
           }
-        } catch (error) {
-          if (signal?.aborted || error.code === 'ENOENT') throw error;
-          playable = false;
+          state.musicCatalog[filePath] = entry;
         }
-        state.musicCatalog[filePath] = { fingerprint, playable };
+      } catch (error) {
+        if (signal?.aborted || (error.code === 'ENOENT' && error.command)) throw error;
+        entry = { playable: false, duration: null, reason: '文件无法读取' };
       }
-      checked.set(file, playable);
-      if (!playable) skipped += 1;
+      checked.set(file, entry);
+      if (!entry.playable) skipped += 1;
     }
   }));
   const usableGroups = new Map([...groups].flatMap(([mood, tracks]) => {
-    const usable = tracks.filter((file) => checked.get(file));
+    const usable = tracks.filter((file) => checked.get(file)?.playable);
     return usable.length ? [[mood, usable]] : [];
   }));
-  if (!usableGroups.size) throw new Error('背景音乐目录中没有可用的非静音音轨，已检查 ' + files.length + ' 首并跳过 ' + skipped + ' 首');
-  return { groups: usableGroups, checked: files.length, skipped };
+  if (!usableGroups.size && !allowEmpty) throw new Error('背景音乐目录中没有可用的非静音音轨，已检查 ' + files.length + ' 首并跳过 ' + skipped + ' 首');
+  return { groups: usableGroups, checked: files.length, skipped, files: [...checked].map(([file, entry]) => ({ file, ...entry })) };
 }
 
 function clamp(value, min, max) {
@@ -264,13 +277,16 @@ function normalizeTranscript(raw, duration) {
       start: Number(segment.start),
       end: Number(segment.end),
       text: String(segment.text || '').trim(),
+      words: Array.isArray(segment.words) ? segment.words : undefined,
     }))
     .filter((segment) => Number.isFinite(segment.start) && Number.isFinite(segment.end) && segment.end > segment.start)
-    .map((segment) => ({
-      start: clamp(segment.start, 0, duration),
-      end: clamp(segment.end, 0, duration),
-      text: segment.text,
-    }))
+    .map((segment) => {
+      const normalized = { start: clamp(segment.start, 0, duration), end: clamp(segment.end, 0, duration), text: segment.text };
+      const words = segment.words?.map((word) => ({ start: Number(word.start), end: Number(word.end), word: String(word.word ?? word.text ?? ''),
+        ...(Number.isFinite(word.probability) ? { probability: word.probability } : {}) }));
+      if (words?.length && words.every((word, index) => Number.isFinite(word.start) && Number.isFinite(word.end) && word.end > word.start && word.start >= normalized.start && word.end <= normalized.end && (!index || word.start >= words[index - 1].start))) normalized.words = words;
+      return normalized;
+    })
     .filter((segment) => segment.end > segment.start)
     .sort((a, b) => a.start - b.start);
 }
@@ -281,11 +297,12 @@ async function findTranscript(videoPath, transcriptDir, duration) {
   const candidates = [
     path.join(transcriptDir, `${stem}.json`),
     path.join(transcriptDir, `${stem}.transcript.json`),
+    path.join(transcriptDir, `${stem}_transcript.json`),
   ];
   for (const candidate of candidates) {
     if (!(await pathExists(candidate))) continue;
     const raw = JSON.parse(await fs.readFile(candidate, 'utf8'));
-    return { path: candidate, segments: normalizeTranscript(raw, duration), source: 'sidecar' };
+    return { path: candidate, segments: normalizeTranscript(raw, duration), source: raw.provider || raw.source || 'sidecar', language: raw.language, languageProbability: raw.language_probability };
   }
   return null;
 }
@@ -347,30 +364,32 @@ function findMoodFolder(mood, groups) {
   return null;
 }
 
-const NEGATION_PATTERN = /(?:不|没|未|别|无|不是|从不|从没|never|not|no|don't|didn't|won't)\s*$/i;
-const WEAK_ENGLISH_CUES = new Set(['mom', 'mother', 'dad', 'father', 'family', 'wife', 'husband', 'love', 'happy', 'sad', 'sorry', 'thank', 'thanks', 'care', 'home']);
+const NEGATION_PATTERN = /(?:(?:不|没|未|别|无|不是|从不|从没)(?:再|会|想|要|觉得|那么|很|真的|感到|是|有){0,3}|(?:\bnever|\bnot|\bno|n't)(?:\s+[a-z]+){0,3})\s*$/i;
+const WEAK_ENGLISH_CUES = new Set(['mom', 'mother', 'dad', 'father', 'family', 'wife', 'husband', 'love', 'loves', 'wedding', 'marry', 'married', 'happy', 'sad', 'sorry', 'thank', 'thanks', 'care', 'home', 'careful', 'danger', 'fight', 'fighting', 'monitor', 'follow', 'finally', 'hope', 'support', '爱', '喜欢', '婚礼', '妈妈', '爸爸', '家人', '小心']);
+MOOD_RULES.find((rule) => rule.mood === '浪漫').words.push('我爱你', '我们一直相爱', '我们结婚吧', 'i love my husband', 'i love my wife');
+MOOD_RULES.find((rule) => rule.mood === '愤怒').words.push('back off', 'made enough of a scene', 'take her side', 'take his side', "don't even trust me", 'stop going after', 'are you tracking me', 'stop making a scene', 'force an answer', 'spread lies');
+WEAK_ENGLISH_CUES.add("i'm scared");
+WEAK_ENGLISH_CUES.add("i'm afraid");
+WEAK_ENGLISH_CUES.add('leave');
+WEAK_ENGLISH_CUES.add('left');
 
 function moodWordHits(text, rule) {
-  const searchableText = String(text || '').toLowerCase();
+  const searchableText = String(text || '').toLowerCase().replace(/[’‘]/g, "'");
   return rule.words.filter((word) => {
     const keyword = word.toLowerCase();
-    let match;
-    if (/^[a-z ]+$/.test(keyword)) {
-      const phrase = keyword.replace(/ +/g, '\\s+');
-      match = new RegExp(`\\b${phrase}\\b`).exec(searchableText);
-    } else {
-      const index = searchableText.indexOf(keyword);
-      match = index < 0 ? null : { index };
-    }
-    if (!match) return false;
-    return !NEGATION_PATTERN.test(searchableText.slice(Math.max(0, match.index - 8), match.index));
+    const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/ +/g, '\\s+');
+    const pattern = new RegExp(/^[a-z]/.test(keyword) ? `\\b${escaped}\\b` : escaped, 'g');
+    return [...searchableText.matchAll(pattern)].some((match) => {
+      const prefix = searchableText.slice(Math.max(0, match.index - 48), match.index).split(/[.,!?;。！？；，\n]/).at(-1);
+      return !NEGATION_PATTERN.test(prefix);
+    });
   });
 }
 
 function moodCandidates(text, groups) {
   return MOOD_RULES.map((rule) => {
     const hits = moodWordHits(text, rule);
-    const usableHits = hits.length === 1 && WEAK_ENGLISH_CUES.has(hits[0]) ? [] : hits;
+    const usableHits = hits.filter((hit) => !WEAK_ENGLISH_CUES.has(hit));
     const phraseHits = usableHits.filter((hit) => hit.length >= 3 || hit.includes(' ')).length;
     return { mood: findMoodFolder(rule.mood, groups), hits: usableHits, score: usableHits.length + phraseHits * 0.25 };
   }).filter((result) => result.mood && result.score > 0).sort((a, b) => b.score - a.score || b.hits.length - a.hits.length);
@@ -386,23 +405,25 @@ function inferMood(transcript, groups, override) {
   const text = (transcript?.segments || []).map((segment) => segment.text).join(' ');
   const hits = moodCandidates(text, groups);
   if (hits.length) return { mood: hits[0].mood, reason: `对白情绪线索: ${hits[0].hits.join('、')}` };
-  const fallback = findMoodFolder(DEFAULT_MOOD, groups) || [...groups.keys()][0];
-  return { mood: fallback, reason: text ? '未命中情绪关键词，使用回退曲目' : '无转录内容，使用回退曲目' };
+  const fallback = findMoodFolder(DEFAULT_MOOD, groups);
+  return { mood: fallback, review: true, reason: fallback ? '情绪证据不足，使用中性回退，待试听' : '情绪证据不足且无中性曲目，保留留白，待检查' };
 }
 
-function chooseTrack(groups, mood, trackUses, episodeTracks) {
-  const allTracks = [...new Set([...groups.values()].flat())];
-  const unused = allTracks.filter((track) => !episodeTracks.has(track));
-  const preferred = (groups.get(mood) || []).filter((track) => !episodeTracks.has(track));
-  const candidates = preferred.length ? preferred : unused;
-  if (!candidates.length) throw new Error('没有可用于新配乐片段的不同曲目');
+function chooseTrack(groups, mood, trackUses, episodeTracks, metadata = new Map(), changeTrack = false, previousTrack = null) {
+  const preferred = (groups.get(mood) || groups.get(findMoodFolder(DEFAULT_MOOD, groups)) || []).filter((track) => track !== previousTrack);
+  const unused = preferred.filter((track) => !episodeTracks.has(track));
+  const neutral = changeTrack ? (groups.get(findMoodFolder(DEFAULT_MOOD, groups)) || []).filter((track) => track !== previousTrack) : [];
+  const unusedNeutral = neutral.filter((track) => !episodeTracks.has(track));
+  const candidates = unused.length ? unused : unusedNeutral.length ? unusedNeutral : preferred.length ? preferred : neutral;
+  if (!candidates.length) return null;
+  const intensity = /紧张|愤怒|冲突|爽感/.test(mood) ? 3 : /浪漫|欢快|励志/.test(mood) ? 2 : 1;
   return [...candidates].sort((a, b) => {
+    const intensityDifference = Math.abs((metadata.get(a)?.intensity || 2) - intensity) - Math.abs((metadata.get(b)?.intensity || 2) - intensity);
     const useDiff = (trackUses.get(a) || 0) - (trackUses.get(b) || 0);
-    return useDiff || naturalCompare(path.basename(a), path.basename(b));
+    return intensityDifference || useDiff || naturalCompare(path.basename(a), path.basename(b));
   })[0];
 }
 
-const MIN_MULTI_TRACK_DURATION = 45;
 const DEFAULT_TRANSITION_FADE_SECONDS = 1;
 
 function classifyMoodText(text, groups) {
@@ -411,31 +432,21 @@ function classifyMoodText(text, groups) {
   return { mood: null, hits: [] };
 }
 
-// 字幕通常只有句段起止时间；按标点和转折词按字数分配时间，避免整句同时命中多个情绪时丢掉变化。
 function splitTranscriptSegment(segment) {
-  const text = String(segment.text || '').trim();
-  const matches = [...text.matchAll(/[。！？!?；;]+|(?:，|,)\s*(?=(?:(?:但是|可是|不过|然而|没想到|却|但)(?![a-zA-Z])|(?:but|however|yet|though|although|instead)\b))|\s+(?=(?:but|however|yet|though|although|instead)\b)/gi)];
-  if (!text || !matches.length) return [segment];
+  if (!segment.words?.length) return [{ ...segment, timingSource: 'segment' }];
   const clauses = [];
-  let cursor = 0;
-  for (const match of matches) {
-    const clause = text.slice(cursor, match.index).trim();
-    if (clause) clauses.push(clause);
-    cursor = match.index + match[0].length;
+  let words = [];
+  const flush = () => {
+    if (words.length) clauses.push({ start: words[0].start, end: words.at(-1).end, text: words.map((word) => word.word).join('').trim(), words, timingSource: 'word' });
+    words = [];
+  };
+  for (const word of segment.words) {
+    if (/^(?:but|however|yet|though|although|instead)\b|^(?:但是|可是|不过|然而)/i.test(word.word.trim())) flush();
+    words.push(word);
+    if (/[。！？!?；;.]\s*$/.test(word.word)) flush();
   }
-  const tail = text.slice(cursor).trim();
-  if (tail) clauses.push(tail);
-  if (clauses.length < 2) return [segment];
-  const start = Number(segment.start) || 0;
-  const end = Number(segment.end) || start;
-  const total = clauses.reduce((sum, clause) => sum + clause.length, 0);
-  let offset = start;
-  return clauses.map((clause, index) => {
-    const next = index === clauses.length - 1 ? end : offset + (end - start) * clause.length / total;
-    const item = { ...segment, start: offset, end: next, text: clause };
-    offset = next;
-    return item;
-  });
+  flush();
+  return clauses;
 }
 
 function pickSectionMood(moodRuns, start, end, fallbackMood) {
@@ -456,16 +467,17 @@ function collectMoodRuns(classified) {
   const runs = [];
   for (const item of classified.filter((segment) => segment.mood).sort((a, b) => a.start - b.start)) {
     const current = runs.at(-1);
-    if (current?.mood === item.mood) {
+    if (current?.mood === item.mood && item.start - current.end <= 12) {
       current.end = Math.max(current.end, item.end);
       current.hitCount += item.hits.length;
       current.segmentCount += 1;
+      current.evidenceSeconds += Math.max(0, item.end - item.start);
     } else {
-      runs.push({ mood: item.mood, start: item.start, end: item.end, hitCount: item.hits.length, segmentCount: 1 });
+      runs.push({ mood: item.mood, start: item.start, end: item.end, hitCount: item.hits.length, segmentCount: 1, evidenceSeconds: item.end - item.start });
     }
   }
 
-  const stableRuns = runs.filter((run) => run.end - run.start >= MIN_MOOD_RUN_SECONDS || run.segmentCount >= 2 || run.hitCount >= MIN_MOOD_RUN_HITS);
+  const stableRuns = runs.filter((run) => run.evidenceSeconds >= MIN_MOOD_RUN_SECONDS && (run.segmentCount >= 2 || run.hitCount >= MIN_MOOD_RUN_HITS || run.evidenceSeconds >= 6));
   return stableRuns.reduce((merged, run) => {
     const previous = merged.at(-1);
     if (previous?.mood === run.mood) {
@@ -488,14 +500,14 @@ function sectionReason(classified, start, end, options) {
   return '未检测到明确情绪关键词，使用默认情绪';
 }
 
-function buildMusicPlan({ duration, transcript, groups, options, trackUses }) {
-  const availableTracks = new Set([...groups.values()].flat()).size;
+function buildMusicPlan({ duration, transcript, groups, options, trackUses, sceneCuts = [] }) {
+  const scenePriority = options.scenePriority !== false;
   const requestedSegmentLimit = Number(options.maxTracksPerEpisode ?? 3);
   const configuredSegmentLimit = Number.isSafeInteger(requestedSegmentLimit) && requestedSegmentLimit >= 0 ? requestedSegmentLimit : 3;
-  const maxSegments = Math.min(configuredSegmentLimit > 0 ? configuredSegmentLimit : availableTracks, availableTracks);
   const requestedMinimum = Number(options.minTracksPerEpisode ?? 1);
-  const minimumSegments = Number.isSafeInteger(requestedMinimum) && requestedMinimum >= 1 ? requestedMinimum : 1;
-  if (minimumSegments > maxSegments) throw new Error(`可用的不同 BGM 曲目只有 ${maxSegments} 首，无法达到每集最低 ${minimumSegments} 段`);
+  if (!Number.isSafeInteger(requestedMinimum) || requestedMinimum < 1 || !scenePriority && configuredSegmentLimit && requestedMinimum > configuredSegmentLimit) throw new Error('每集 BGM 下限必须为正整数，且不能高于生效的上限');
+  const maxSegments = scenePriority ? Infinity : configuredSegmentLimit || Infinity;
+  let minimumTarget = Math.min(requestedMinimum, Math.max(1, Math.floor(duration / 6)));
   const episodeTracks = new Set();
   const baseMood = inferMood(transcript, groups, options.mood);
   const rawSegments = transcript?.segments || [];
@@ -508,38 +520,150 @@ function buildMusicPlan({ duration, transcript, groups, options, trackUses }) {
     const previous = moodRuns[index - 1];
     const current = moodRuns[index];
     if (previous.mood === current.mood) continue;
+    const gapStart = Math.min(previous.end, current.start);
+    const gapEnd = current.start;
+    const scene = sceneCuts.filter((cut) => cut.time >= gapStart - 0.2 && cut.time <= gapEnd + 0.2 && (!scenePriority || Math.abs(cut.time - current.start) <= 1.5))
+      .sort((a, b) => Math.abs(a.time - current.start) - Math.abs(b.time - current.start))[0];
+    const pause = gapEnd - gapStart >= 0.3;
     candidates.push({
-      boundary: clamp((previous.end + current.start) / 2, 0, duration),
+      boundary: clamp(scene?.time ?? (pause ? gapEnd - Math.min(0.2, (gapEnd - gapStart) / 2) : current.start), 0, duration),
+      window: [gapStart, gapEnd], sceneTime: scene?.time,
+      nextMood: current.mood,
+      reason: scene ? '持续对白情绪转折与镜头候选重合' : pause ? '持续对白情绪转折，落在对白停顿' : '持续对白情绪转折，落在句段边界',
       score: previous.hitCount + current.hitCount + Math.min(current.end - current.start, 30) / 30,
     });
   }
-  const minimumSegmentDuration = Math.min(12, duration / Math.max(1, maxSegments));
-  const boundaries = [];
-  for (const candidate of candidates.sort((a, b) => b.score - a.score || a.boundary - b.boundary)) {
-    if (boundaries.length >= maxSegments - 1) break;
-    if (candidate.boundary < minimumSegmentDuration || duration - candidate.boundary < minimumSegmentDuration) continue;
-    if (boundaries.some((boundary) => Math.abs(boundary - candidate.boundary) < minimumSegmentDuration)) continue;
-    boundaries.push(candidate.boundary);
+  // shortcut: visual scores cannot understand locations; replace with scene semantics when false cuts matter.
+  if (scenePriority) for (const cut of sceneCuts) {
+    if (cut.score < 30 && cut.kind !== 'black') continue;
+    candidates.push({ boundary: cut.time, sceneTime: cut.time, sceneChange: true, changeTrack: true,
+      reason: '转场必换曲：检测到场景变化，即使情绪相同也更换曲目，待试听', score: cut.score / 10 });
   }
-  boundaries.sort((a, b) => a - b);
-  const points = [0, ...boundaries, duration];
+  if (!options.mood) for (let index = 1; index < rawSegments.length; index += 1) {
+    const pauseStart = rawSegments[index - 1].end;
+    const pauseEnd = rawSegments[index].start;
+    if (pauseEnd - pauseStart < 2.5) continue;
+    const scene = sceneCuts.filter((cut) => cut.time >= pauseStart && cut.time <= pauseEnd + 0.2)
+      .sort((a, b) => Math.abs(a.time - pauseEnd) - Math.abs(b.time - pauseEnd))[0];
+    if (!scene || !moodRuns.some((run) => run.end <= pauseEnd && pauseEnd - run.end <= 12)) continue;
+    if (moodRuns.some((run) => run.start < pauseEnd && run.end > pauseEnd)) continue;
+    candidates.push({ boundary: scene.time, window: [pauseStart, pauseEnd], sceneTime: scene.time,
+      neutralReset: true, reason: '镜头变化与较长对白停顿重合，结束前段情绪并保守回退，待试听', score: 2 });
+  }
+  const minimumSegmentDuration = Math.min(12, duration);
+  const boundaries = [];
+  const canSplit = (time, spacing, allowShortTail = true) => {
+    const points = [0, ...boundaries.map((item) => item.boundary), duration].sort((a, b) => a - b);
+    const index = points.findIndex((end) => end > time);
+    if (index < 1 || time - points[index - 1] < spacing || points[index] - time < (allowShortTail && index === points.length - 1 ? Math.min(6, spacing) : spacing)) return false;
+    const split = [...points, time].sort((a, b) => a - b);
+    return split.slice(1).reduce((sum, end, i) => sum + Math.max(1, Math.floor((end - split[i] + 0.000001) / 6)), 0) >= minimumTarget;
+  };
+  if (scenePriority) {
+    for (const candidate of candidates.sort((a, b) => a.boundary - b.boundary)) {
+      if (candidate.boundary <= 0 || candidate.boundary >= duration) continue;
+      const existing = boundaries.find((item) => Math.abs(item.boundary - candidate.boundary) < 0.25);
+      if (existing) {
+        if (candidate.sceneChange) Object.assign(existing, { boundary: candidate.boundary, sceneTime: candidate.sceneTime, sceneChange: true });
+        existing.nextMood ||= candidate.nextMood;
+        existing.neutralReset ||= candidate.neutralReset;
+        existing.reason = [...new Set([existing.reason, candidate.reason])].join('；');
+      } else boundaries.push({ ...candidate, required: true, changeTrack: true });
+    }
+  } else for (const candidate of candidates.sort((a, b) => b.score - a.score || a.boundary - b.boundary)) {
+    if (boundaries.length >= maxSegments - 1) break;
+    if (canSplit(candidate.boundary, minimumSegmentDuration)) boundaries.push(candidate);
+  }
+  const requiredPoints = [0, ...boundaries.map((item) => item.boundary), duration].sort((a, b) => a - b);
+  minimumTarget = Math.min(requestedMinimum, requiredPoints.slice(1).reduce((sum, end, index) =>
+    sum + Math.max(1, Math.floor((end - requiredPoints[index] + 0.000001) / 6)), 0));
+  const minimumCandidates = sceneCuts.map((cut) => ({ boundary: cut.time, sceneTime: cut.time, score: cut.score,
+    changeTrack: true, reason: '满足每集 BGM 下限，优先在镜头变化处换曲，待试听' }));
+  for (let index = 1; index < rawSegments.length; index += 1) {
+    const start = rawSegments[index - 1].end;
+    const end = rawSegments[index].start;
+    if (end - start >= 0.3) minimumCandidates.push({ boundary: (start + end) / 2, score: end - start,
+      changeTrack: true, reason: '满足每集 BGM 下限，在对白停顿处换曲，待试听' });
+  }
+  minimumCandidates.sort((a, b) => Number(Boolean(b.sceneTime)) - Number(Boolean(a.sceneTime)) || b.score - a.score);
+  for (const spacing of [12, 6]) for (const candidate of minimumCandidates) {
+    if (boundaries.length >= minimumTarget - 1) break;
+    if (canSplit(candidate.boundary, spacing, false)) boundaries.push(candidate);
+  }
+  while (boundaries.length < minimumTarget - 1) {
+    const points = [0, ...boundaries.map((item) => item.boundary), duration].sort((a, b) => a - b);
+    const [start, end] = points.slice(1).map((end, index) => [points[index], end]).sort((a, b) => (b[1] - b[0]) - (a[1] - a[0]))[0];
+    const capacity = Math.floor((end - start + 0.000001) / 6);
+    if (capacity < 2) break;
+    boundaries.push({ boundary: start + (end - start) * Math.floor(capacity / 2) / capacity, changeTrack: true,
+      reason: '满足每集 BGM 下限：无合适转场或停顿，按可用时长补足换曲，待试听' });
+  }
+  boundaries.sort((a, b) => a.boundary - b.boundary);
+  for (const boundary of boundaries.slice(0, minimumTarget - 1)) boundary.changeTrack = true;
+  const points = [0, ...boundaries.map((item) => item.boundary), duration];
   const ranges = points.slice(1).map((end, index) => [points[index], end]);
-  const segments = ranges.map(([start, end]) => {
-    const mood = pickSectionMood(moodRuns, start, end, baseMood.mood);
-    const track = chooseTrack(groups, mood, trackUses, episodeTracks);
-    episodeTracks.add(track);
-    trackUses.set(track, (trackUses.get(track) || 0) + 1);
-    return {
-      start,
-      end,
-      mood,
-      reason: start > 0
-        ? '台词情绪转折；' + sectionReason(classified, start, end, options)
-        : sectionReason(classified, start, end, options),
-      track,
-    };
+  const fallbackMood = options.mood ? baseMood.mood : findMoodFolder(DEFAULT_MOOD, groups);
+  const sections = [];
+  for (const [start, end] of ranges) {
+    const previous = sections.at(-1);
+    const transition = boundaries.find((item) => Math.abs(item.boundary - start) < 0.001);
+    const reset = transition?.neutralReset || transition?.sceneChange;
+    const mood = scenePriority && transition?.nextMood || pickSectionMood(moodRuns, start, end, reset ? fallbackMood : previous?.mood || fallbackMood);
+    if (previous && previous.mood === mood && !transition?.changeTrack) { previous.end = end; continue; }
+    sections.push({ start, end, mood, transition });
+  }
+  const segments = [];
+  for (const section of sections) {
+    const { start, end, mood, transition } = section;
+    const previous = segments.at(-1);
+    const track = chooseTrack(groups, mood, trackUses, episodeTracks, options.trackMetadata, transition?.changeTrack || episodeTracks.size < requestedMinimum, transition?.required ? previous?.track : null);
+    if (transition?.required && (!track || track === previous?.track)) throw new Error(`${formatNumber(start)} 秒处必须换曲，但没有另一首匹配情绪或兼容中性的合格曲目；请补充或确认曲目后重试。`);
+    const metadata = options.trackMetadata?.get(track);
+    const compatibleFallback = track && !(groups.get(mood) || []).includes(track);
+    const evidence = moodRuns.filter((run) => Math.min(run.end, end) > Math.max(run.start, start));
+    const review = Boolean(transition?.changeTrack) || !evidence.length || end - Math.max(...evidence.map((run) => run.end)) > 12 || compatibleFallback || !track;
+    const reason = [start > 0 ? boundaries.find((item) => Math.abs(item.boundary - start) < 0.001)?.reason : '',
+      sectionReason(classified, start, end, options), compatibleFallback ? '目标情绪曲目不足，使用兼容中性曲目' : '',
+      !track ? '无匹配的纯音乐，留白待检查' : review ? '规则证据不足，保守沿用或中性回退，待试听' : ''].filter(Boolean).join('；');
+    if (previous && previous.track === track) { previous.end = end; previous.reason += '；后续相近需求继续原曲'; previous.review ||= review; continue; }
+    if (track) { episodeTracks.add(track); trackUses.set(track, (trackUses.get(track) || 0) + 1); }
+    segments.push({ start, end, mood: mood || '中性留白', track, reason, review,
+      cueIn: metadata?.cueIn || 0, intensity: metadata?.intensity || null,
+      instrumentalStatus: metadata?.status || (track ? 'unknown' : 'silence'),
+      vocalEvidence: metadata?.analysis?.intervals || [],
+      transition: boundaries.find((item) => Math.abs(item.boundary - start) < 0.001) || null,
+      timingSource: classified.some((item) => item.timingSource === 'word') ? 'word' : 'segment',
+    });
+  }
+  const sceneCandidates = sceneCuts.map((cut) => {
+    const segment = segments.find((item) => item.start > 0 && Math.abs(item.start - cut.time) < 0.25);
+    return { ...cut, required: scenePriority && (cut.score >= 30 || cut.kind === 'black'), used: Boolean(segment), reason: segment?.transition?.reason || '普通镜头候选或转场必换已关闭；未触发情绪换曲或数量补足' };
   });
-  return { baseMood, segments };
+  if (sceneCandidates.some((cut) => cut.required && !cut.used)) throw new Error('检测到转场却未能更换曲目，请检查转场计划后重试');
+  const actualTracks = new Set(segments.map((segment) => segment.track).filter(Boolean)).size;
+  const trackCount = { minimum: requestedMinimum, actual: actualTracks, segments: segments.length, met: actualTracks >= requestedMinimum };
+  trackCount.warning = trackCount.met ? '' : `未达到每集至少 ${requestedMinimum} 首：实际 ${actualTracks} 首；${minimumTarget < requestedMinimum ? '有效配乐时长不足或受必换点分段限制，补足片段至少保留 6 秒' : '当前情绪及兼容中性曲目不足，不使用不匹配或未通过筛选的曲目补数'}。`;
+  return { baseMood, segments, sceneCandidates, trackCount, planningVersion: PLANNING_VERSION };
+}
+
+function parseSceneCandidates(stderr, duration) {
+  const cuts = [...stderr.matchAll(/lavfi\.scd\.score:\s*([\d.]+),\s*lavfi\.scd\.time:\s*([\d.]+)/g)]
+    .map((match) => ({ time: Number(match[2]), score: Number(match[1]), kind: 'cut' }));
+  for (const match of stderr.matchAll(/black_start:([\d.]+)\s+black_end:([\d.]+)\s+black_duration:([\d.]+)/g)) {
+    if (Number(match[3]) >= 0.12) cuts.push({ time: Number(match[2]), score: 100, kind: 'black' });
+  }
+  const filtered = [];
+  for (const cut of cuts.filter((item) => item.time >= 0.5 && item.time <= duration - 0.5).sort((a, b) => a.time - b.time)) {
+    const previous = filtered.at(-1);
+    if (previous && cut.time - previous.time < 1) { previous.score = Math.max(previous.score, cut.score); if (cut.kind === 'black') previous.kind = 'black'; }
+    else filtered.push(cut);
+  }
+  return filtered;
+}
+
+async function detectSceneCandidates(videoPath, duration, options) {
+  const { stderr } = await runProcess(options.ffmpeg, ['-hide_banner', '-nostats', '-i', videoPath, '-an', '-vf', 'scale=248:-2,scdet=threshold=10,blackdetect=d=0.12:pix_th=0.10', '-f', 'null', '-'], { signal: options.signal });
+  return parseSceneCandidates(stderr, duration);
 }
 
 function clipIntervals(intervals, start, end) {
@@ -581,20 +705,21 @@ function buildMultiTrackFilter(segments, duration, options, intervals, hasDialog
     const localIntervals = clipIntervals(intervals, renderStart, renderEnd)
       .map((interval) => ({ start: interval.start - renderStart, end: interval.end - renderStart }));
     const filters = [
-      'atrim=start=0:duration=' + formatNumber(renderDuration),
+      'atrim=start=' + formatNumber(segment.cueIn || 0) + ':duration=' + formatNumber(renderDuration),
       'asetpts=PTS-STARTPTS',
       'aresample=48000',
       'aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo',
     ];
     const fadeIn = index === 0 ? clamp(Number(options.fadeIn) || 0, 0, renderDuration) : Math.min(crossfade, renderDuration);
     const fadeOut = index === segments.length - 1 ? clamp(Number(options.fadeOut) || 0, 0, renderDuration) : Math.min(crossfade, renderDuration);
-    if (options.autoDuck && localIntervals.length && options.duckDb < 0) {
-      filters.push("volume=volume='" + buildDuckExpression(localIntervals, options.duckDb) + "':eval=frame");
-    }
     filters.push('loudnorm=I=' + (hasDialogue ? -28 : -18) + ':TP=-1.5:LRA=11:print_format=none');
     filters.push('aresample=48000');
     filters.push('aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo');
+    filters.push('asetnsamples=n=480:p=0');
     filters.push('asetpts=N/SR/TB');
+    if (options.autoDuck && localIntervals.length && options.duckDb < 0) {
+      filters.push("volume=volume='" + buildDuckExpression(localIntervals, options.duckDb) + "':eval=frame");
+    }
     if (fadeIn > 0) filters.push('afade=t=in:st=0:d=' + formatNumber(fadeIn));
     if (fadeOut > 0) filters.push('afade=t=out:st=' + formatNumber(Math.max(0, renderDuration - fadeOut)) + ':d=' + formatNumber(fadeOut));
     if (renderStart > 0) filters.push('adelay=' + Math.round(renderStart * 1000) + ':all=1');
@@ -639,25 +764,41 @@ function csvEscape(value) {
   return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
-function timelineCsv({ episode, segments, options, intervals, freezeTailSeconds }) {
-  const headers = ['episode', 'segment', 'start_sec', 'end_sec', 'bgm_file', 'mood', 'selection_reason', 'fade_in_sec', 'fade_out_sec', 'duck_db', 'duck_segments', 'freeze_tail', 'freeze_tail_sec'];
+function timelineCsv({ episode, segments, options, intervals, freezeTailSeconds, trackCount }) {
+  const crossfade = segments.length > 1 && options.transitionFadeEnabled !== false ? Math.min(transitionFadeSeconds(options), ...segments.map((segment) => (segment.end - segment.start) / 2)) : 0;
+  const headers = ['episode', 'segment', 'start_sec', 'end_sec', 'bgm_file', 'mood', 'selection_reason', 'fade_in_sec', 'fade_out_sec', 'duck_db', 'duck_segments', 'freeze_tail', 'freeze_tail_sec', 'analysis_version', 'instrumental_status', 'cue_in_sec', 'intensity', 'needs_review', 'timing_source', 'transition_evidence', 'duck_attack_sec', 'duck_release_sec', 'music_loudness_lufs', 'vocal_evidence', 'scene_priority', 'minimum_tracks', 'actual_tracks', 'minimum_met'];
   const rows = segments.map((segment, index) => [
     episode,
     index + 1,
     formatNumber(segment.start),
     formatNumber(segment.end),
-    path.relative(options.music, segment.track),
+    segment.track ? path.relative(options.music, segment.track) : '',
     segment.mood,
     segment.reason,
-    formatNumber(options.fadeIn),
-    formatNumber(options.fadeOut),
-    formatNumber(options.autoDuck ? options.duckDb : 0),
-    JSON.stringify(options.autoDuck ? clipIntervals(intervals, segment.start, segment.end).map((interval) => ({
+    formatNumber(index === 0 ? clamp(Number(options.fadeIn) || 0, 0, segment.end - segment.start) : crossfade),
+    formatNumber(index === segments.length - 1 ? clamp(Number(options.fadeOut) || 0, 0, segment.end - segment.start) : crossfade),
+    formatNumber(options.autoDuck && segment.track && options.duckDb < 0 && clipIntervals(intervals, segment.start, segment.end).length ? options.duckDb : 0),
+    JSON.stringify(options.autoDuck && segment.track && options.duckDb < 0 ? clipIntervals(intervals, segment.start, segment.end).map((interval) => ({
       start: Number(formatNumber(interval.start)),
       end: Number(formatNumber(interval.end)),
     })) : []),
     options.freezeTail || '0:00',
     formatNumber(freezeTailSeconds),
+    PLANNING_VERSION,
+    segment.instrumentalStatus,
+    formatNumber(segment.cueIn || 0),
+    segment.intensity || '',
+    Boolean(segment.review),
+    segment.timingSource,
+    JSON.stringify(segment.transition),
+    options.autoDuck && segment.track && options.duckDb < 0 && clipIntervals(intervals, segment.start, segment.end).length ? 0.12 : 0,
+    options.autoDuck && segment.track && options.duckDb < 0 && clipIntervals(intervals, segment.start, segment.end).length ? 0.12 : 0,
+    options.hasOriginalAudio ? -28 : -18,
+    JSON.stringify(segment.vocalEvidence || []),
+    options.scenePriority !== false,
+    trackCount.minimum,
+    trackCount.actual,
+    trackCount.met,
   ]);
   return [headers, ...rows].map((row) => row.map(csvEscape).join(',')).join('\n') + '\n';
 }
@@ -722,7 +863,7 @@ async function finalVideoIsValid(outputPath, duration, ffprobe, ffmpeg, signal) 
   }
 }
 
-async function outputIsValid(outputPath, duration, ffprobe, ffmpeg, signal) {
+async function outputIsValid(outputPath, duration, ffprobe, ffmpeg, signal, allowSilence = false) {
   if (!(await pathExists(outputPath))) return false;
   try {
     const info = await probeMedia(outputPath, ffprobe, signal);
@@ -732,7 +873,7 @@ async function outputIsValid(outputPath, duration, ffprobe, ffmpeg, signal) {
     const peak = stderr.match(/max_volume:\s*(-?[\d.]+)\s*dB/);
     const mean = stderr.match(/mean_volume:\s*(-?[\d.]+)\s*dB/);
     // shortcut: treat mean levels at or below -70 dB as silence; if ultra-quiet BGM is supported, make this configurable.
-    return Boolean(peak && mean && Number.isFinite(Number(peak[1])) && Number.isFinite(Number(mean[1])) && Number(peak[1]) <= -0.9 && Number(mean[1]) > -70);
+    return Boolean(peak && mean && Number.isFinite(Number(peak[1])) && Number.isFinite(Number(mean[1])) && Number(peak[1]) <= -0.9 && (allowSilence || Number(mean[1]) > -70));
   } catch {
     return false;
   }
@@ -746,7 +887,7 @@ async function removeIfExists(filePath) {
   }
 }
 
-async function renderEpisode({ videoPath, outputDir, groups, state, options, catalogSignature, onProcessing }) {
+async function renderEpisode({ videoPath, outputDir, groups, state, options, catalogSignature, libraryUnavailableReason, onProcessing, onStage }) {
   const episode = path.parse(videoPath).name;
   const outputPath = path.join(outputDir, episode + '_bgm.wav');
   const timelinePath = path.join(outputDir, episode + '_timeline.csv');
@@ -767,10 +908,20 @@ async function renderEpisode({ videoPath, outputDir, groups, state, options, cat
     outputTranscript: options.outputTranscript !== false,
   };
   const needsAudio = selectedOutputs.outputAudio || selectedOutputs.outputVideo;
+  const timings = {};
+  let activeStage;
+  let stageStarted = Date.now();
+  const stage = (name) => {
+    const now = Date.now();
+    if (activeStage) timings[activeStage] = (timings[activeStage] || 0) + now - stageStarted;
+    activeStage = name; stageStarted = now;
+    onStage?.(name);
+  };
 
 
 
   try {
+    stage('probing');
     const probe = await probeMedia(videoPath, options.ffprobe, options.signal);
     if (!probe.hasVideo) throw new Error('输入没有视频流: ' + videoPath);
     const freezeTailSeconds = freezeTailDuration(options.freezeTail, probe.frameRate);
@@ -784,7 +935,7 @@ async function renderEpisode({ videoPath, outputDir, groups, state, options, cat
 
     const transcriptOutputValid = !selectedOutputs.outputTranscript || !transcriptRequired || (ownsAsrTranscript && await pathExists(asrTranscriptPath));
     if (options.skipCompleted !== false && existing?.status === 'completed' &&
-      (!selectedOutputs.outputAudio || (existing.outputPath === outputPath && await outputIsValid(outputPath, musicDuration, options.ffprobe, options.ffmpeg, options.signal))) &&
+      (!selectedOutputs.outputAudio || (existing.outputPath === outputPath && await outputIsValid(outputPath, musicDuration, options.ffprobe, options.ffmpeg, options.signal, Boolean(existing.analysis?.segments?.length && existing.analysis.segments.every((segment) => !segment.track))))) &&
       (!selectedOutputs.outputVideo || (existing.finalVideoPath === finalVideoPath && await finalVideoIsValid(finalVideoPath, probe.duration, options.ffprobe, options.ffmpeg, options.signal))) &&
       (!selectedOutputs.outputTimeline || (existing.timelinePath === timelinePath && await pathExists(timelinePath))) && transcriptOutputValid) {
       state.episodes[stateKey] = {
@@ -798,6 +949,8 @@ async function renderEpisode({ videoPath, outputDir, groups, state, options, cat
       await writeState(path.join(outputDir, '.mvp-state.json'), state);
       return {
         status: 'skipped', episode,
+        analysisVersion: existing.analysisVersion || 'legacy',
+        needsRegeneration: existing.analysisVersion !== PLANNING_VERSION,
         outputPath: selectedOutputs.outputAudio ? outputPath : '',
         finalVideoPath: selectedOutputs.outputVideo ? finalVideoPath : '',
         timelinePath: selectedOutputs.outputTimeline ? timelinePath : '',
@@ -806,6 +959,7 @@ async function renderEpisode({ videoPath, outputDir, groups, state, options, cat
       };
     }
 
+    if (!groups.size) throw new Error(libraryUnavailableReason);
     const ownsOutput = existing?.outputPath === outputPath;
     const ownsTimeline = existing?.timelinePath === timelinePath;
     const ownsFinalVideo = existing?.finalVideoPath === finalVideoPath;
@@ -828,6 +982,7 @@ async function renderEpisode({ videoPath, outputDir, groups, state, options, cat
       sourceMtimeMs: sourceStat.mtimeMs,
       catalogSignature,
       mood: options.mood,
+      scenePriority: options.scenePriority !== false,
       minTracksPerEpisode: options.minTracksPerEpisode,
       transcribe: options.transcribe,
       transcriptionModel,
@@ -841,10 +996,15 @@ async function renderEpisode({ videoPath, outputDir, groups, state, options, cat
       fadeOut: options.fadeOut,
       transitionFadeEnabled: options.transitionFadeEnabled !== false,
       transitionFadeDuration: transitionFadeSeconds(options),
+      strictInstrumental: options.strictInstrumental !== false,
+      analysisVersion: ANALYSIS_VERSION,
+      analysisSettings: ANALYSIS_SETTINGS,
+      modelSha256: MODEL_SHA256,
+      planningVersion: PLANNING_VERSION,
     })).digest('hex');
 
     state.episodes[stateKey] = {
-      ...existing, episode, status: 'processing', signature, sourceSize: sourceStat.size, sourceMtimeMs: sourceStat.mtimeMs,
+      ...existing, episode, status: 'processing', error: '', signature, sourceSize: sourceStat.size, sourceMtimeMs: sourceStat.mtimeMs,
       videoPath, ...selectedOutputs,
       outputPath: selectedOutputs.outputAudio ? outputPath : existing?.outputPath || '',
       finalVideoPath: selectedOutputs.outputVideo ? finalVideoPath : existing?.finalVideoPath || '',
@@ -858,9 +1018,16 @@ async function renderEpisode({ videoPath, outputDir, groups, state, options, cat
 
     let activeTranscript = transcript;
     if (!activeTranscript && options.transcribe && probe.hasAudio) {
+      stage('transcribing');
       activeTranscript = await runTranscriber(videoPath, tempTranscriptPath, options);
     }
 
+    stage('detecting-scenes');
+    let sceneCuts = [];
+    let sceneError = '';
+    try { sceneCuts = await detectSceneCandidates(videoPath, musicDuration, options); }
+    catch (error) { if (options.signal?.aborted) throw error; if (options.scenePriority !== false) throw new Error('转场必换曲已开启，但转场检测失败：' + error.message); sceneError = error.message; }
+    stage('planning');
     const intervals = mergeIntervals(activeTranscript?.segments || [], probe.duration);
     const musicPlan = buildMusicPlan({
       duration: musicDuration,
@@ -868,6 +1035,7 @@ async function renderEpisode({ videoPath, outputDir, groups, state, options, cat
       groups,
       options,
       trackUses: new Map(Object.entries(state.trackUses)),
+      sceneCuts,
     });
     const filter = buildMultiTrackFilter(musicPlan.segments, musicDuration, options, intervals, probe.hasAudio);
 
@@ -875,8 +1043,12 @@ async function renderEpisode({ videoPath, outputDir, groups, state, options, cat
     await removeIfExists(tempFinalVideoPath);
     await removeIfExists(tempTimelinePath);
     if (needsAudio) {
+      stage('rendering-audio');
       const ffmpegArgs = ['-hide_banner', '-loglevel', 'error', '-y'];
-      for (const segment of musicPlan.segments) ffmpegArgs.push('-stream_loop', '-1', '-i', segment.track);
+      for (const segment of musicPlan.segments) {
+        if (segment.track) ffmpegArgs.push('-stream_loop', '-1', '-i', segment.track);
+        else ffmpegArgs.push('-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo');
+      }
       ffmpegArgs.push(
         '-filter_complex', filter,
         '-map', '[aout]',
@@ -885,14 +1057,16 @@ async function renderEpisode({ videoPath, outputDir, groups, state, options, cat
         tempOutputPath,
       );
       await runProcess(options.ffmpeg, ffmpegArgs, { signal: options.signal });
-      if (!(await outputIsValid(tempOutputPath, musicDuration, options.ffprobe, options.ffmpeg, options.signal))) throw new Error('输出 WAV 校验失败');
+      if (!(await outputIsValid(tempOutputPath, musicDuration, options.ffprobe, options.ffmpeg, options.signal, musicPlan.segments.every((segment) => !segment.track)))) throw new Error('输出 WAV 校验失败');
     }
     if (selectedOutputs.outputVideo) {
+      stage('rendering-video');
       await renderFinalVideo(videoPath, tempOutputPath, tempFinalVideoPath, probe, options);
       if (!(await finalVideoIsValid(tempFinalVideoPath, probe.duration, options.ffprobe, options.ffmpeg, options.signal))) throw new Error('最终成片校验失败');
     }
+    stage('saving');
     if (selectedOutputs.outputTimeline) {
-      const csv = timelineCsv({ episode, segments: musicPlan.segments, options, intervals, freezeTailSeconds });
+      const csv = timelineCsv({ episode, segments: musicPlan.segments, options: { ...options, hasOriginalAudio: probe.hasAudio }, intervals, freezeTailSeconds, trackCount: musicPlan.trackCount });
       await fs.writeFile(tempTimelinePath, '\uFEFF' + csv, 'utf8');
     }
     if (selectedOutputs.outputAudio) await fs.rename(tempOutputPath, outputPath);
@@ -909,9 +1083,18 @@ async function renderEpisode({ videoPath, outputDir, groups, state, options, cat
       await fs.rename(tempTranscriptOutputPath, asrTranscriptPath);
     }
 
-    for (const segment of musicPlan.segments) state.trackUses[segment.track] = (state.trackUses[segment.track] || 0) + 1;
+    for (const segment of musicPlan.segments) if (segment.track) state.trackUses[segment.track] = (state.trackUses[segment.track] || 0) + 1;
     const moods = musicPlan.segments.map((segment) => segment.mood);
     const tracks = musicPlan.segments.map((segment) => segment.track);
+    const duckIntervals = options.autoDuck && options.duckDb < 0 ? musicPlan.segments.flatMap((segment) => segment.track ? clipIntervals(intervals, segment.start, segment.end) : []) : [];
+    stage('completed');
+    const analysis = { version: PLANNING_VERSION, vocalVersion: ANALYSIS_VERSION, strictInstrumental: options.strictInstrumental !== false,
+      wordTimestamps: Boolean(activeTranscript?.segments.some((segment) => segment.words?.length)), sceneCandidates: musicPlan.sceneCandidates, sceneError,
+      segments: musicPlan.segments, timings, scenePriority: options.scenePriority !== false, trackCount: musicPlan.trackCount,
+      needsReview: Boolean(sceneError || !musicPlan.trackCount.met || musicPlan.segments.some((segment) => segment.review)),
+      ducking: { enabled: Boolean(duckIntervals.length), db: duckIntervals.length ? options.duckDb : 0, attackSeconds: duckIntervals.length ? 0.12 : 0, releaseSeconds: duckIntervals.length ? 0.12 : 0, intervals: duckIntervals },
+      originalAudioPreserved: probe.hasAudio, originalMusicChecked: false,
+    };
     state.episodes[stateKey] = {
       ...state.episodes[stateKey], status: 'completed', signature, sourceSize: sourceStat.size, sourceMtimeMs: sourceStat.mtimeMs,
       episode, videoPath, ...selectedOutputs,
@@ -921,6 +1104,7 @@ async function renderEpisode({ videoPath, outputDir, groups, state, options, cat
       transcriptPath: saveTranscript ? asrTranscriptPath : existing?.transcriptPath || '',
       duration: probe.duration, mood: moods.join(' → '), moods, track: tracks[0], tracks,
       transcriptSource: activeTranscript?.source || 'none', transcribe: Boolean(options.transcribe), duckSegments: intervals.length, segments: musicPlan.segments.length,
+      analysisVersion: PLANNING_VERSION, analysis,
       updatedAt: new Date().toISOString(),
     };
     await writeState(path.join(outputDir, '.mvp-state.json'), state);
@@ -931,6 +1115,7 @@ async function renderEpisode({ videoPath, outputDir, groups, state, options, cat
       timelinePath: selectedOutputs.outputTimeline ? timelinePath : '',
       transcriptPath: saveTranscript ? asrTranscriptPath : undefined,
       ...selectedOutputs, duration: probe.duration, mood: moods.join(' → '), moods, tracks,
+      analysisVersion: PLANNING_VERSION, analysis,
     };
 
   } catch (error) {
@@ -939,7 +1124,7 @@ async function renderEpisode({ videoPath, outputDir, groups, state, options, cat
     await removeIfExists(tempTimelinePath);
     const interrupted = options.signal?.aborted || error.name === 'AbortError' || error.code === 'ABORT_ERR';
     state.episodes[stateKey] = {
-      ...state.episodes[stateKey], status: interrupted ? 'interrupted' : 'failed', sourceSize: sourceStat.size, sourceMtimeMs: sourceStat.mtimeMs,
+      ...state.episodes[stateKey], episode, videoPath, status: interrupted ? 'interrupted' : 'failed', sourceSize: sourceStat.size, sourceMtimeMs: sourceStat.mtimeMs,
       error: interrupted ? '用户中断' : error.message, updatedAt: new Date().toISOString(),
     };
     await writeState(path.join(outputDir, '.mvp-state.json'), state);
@@ -951,6 +1136,7 @@ async function renderEpisode({ videoPath, outputDir, groups, state, options, cat
   }
 }
 async function runBatch(options, logger = console) {
+  if (!['all', 'unfinished', 'failed', 'episode'].includes(options.runMode || 'all')) throw new Error('不支持的批次恢复方式');
   const videosPath = normalizePath(options.videos);
   const musicPath = normalizePath(options.music);
   const outputPath = normalizePath(options.output);
@@ -959,22 +1145,51 @@ async function runBatch(options, logger = console) {
   options.output = outputPath;
   await ensureDirectory(outputPath);
   if (options.signal?.aborted) throw Object.assign(new Error('用户中断'), { name: 'AbortError', code: 'ABORT_ERR' });
-  const [videos, scannedGroups] = await Promise.all([scanVideos(videosPath), scanMusic(musicPath)]);
+  const allVideos = await scanVideos(videosPath);
   const statePath = path.join(outputPath, '.mvp-state.json');
   const state = await readState(statePath);
+  let videos = allVideos;
+  if (options.runMode === 'failed') videos = videos.filter((video) => state.episodes[normalizePath(video)]?.status === 'failed');
+  if (options.runMode === 'episode') videos = videos.filter((video) => normalizePath(video) === normalizePath(options.episodeVideoPath || ''));
+  if (!videos.length) throw new Error('没有符合条件的视频；请刷新队列并检查失败项或当前选集');
+  if (options.runMode === 'unfinished') options.skipCompleted = true;
+  if (['failed', 'episode'].includes(options.runMode)) options.skipCompleted = false;
+  logger.progress?.({ stage: 'scanning', total: videos.length, videosPath, musicPath, outputPath });
+  const scannedGroups = await scanMusic(musicPath);
+  const sources = new Set([...allVideos, ...[...scannedGroups.values()].flat()].map((file) => normalizePath(file).toLowerCase()));
+  for (const video of videos) {
+    const episode = path.parse(video).name;
+    const targets = [options.outputAudio !== false && `${episode}_bgm.wav`, options.outputVideo !== false && `${episode}_final${path.extname(video).toLowerCase()}`].filter(Boolean);
+    for (const target of targets) if (sources.has(path.join(outputPath, target).toLowerCase())) throw new Error('输出路径与输入素材重合，已阻止覆盖；请选择独立输出目录：' + target);
+  }
+  logger.progress?.({ stage: 'checking-library', total: videos.length });
+  const cachedLibrary = await readLibrary(musicPath, options);
+  state.musicCatalog = { ...cachedLibrary.health, ...state.musicCatalog };
   const inspected = await inspectMusicCatalog(scannedGroups, options.ffprobe, options.ffmpeg, options.signal, state);
-  const groups = inspected.groups;
+  logger.progress?.({ stage: 'analyzing-vocals', total: videos.length });
+  const libraryStarted = Date.now();
+  const library = await filterLibrary(inspected.groups, options, { analyze: options.strictInstrumental !== false, signal: options.signal,
+    progress: (event) => logger.progress?.({ stage: 'analyzing-vocals', library: event, total: videos.length }),
+  });
+  const libraryElapsedMs = Date.now() - libraryStarted;
+  const savedLibrary = await readLibrary(musicPath, options);
+  savedLibrary.health = state.musicCatalog;
+  await writeLibrary(musicPath, savedLibrary, options);
+  const groups = library.groups;
+  options.trackMetadata = new Map(library.files.map((entry) => [entry.file, { ...entry, duration: inspected.files.find((file) => file.file === entry.file)?.duration }]));
+  const libraryUnavailableReason = '曲库没有符合纯音乐筛选条件的曲目：' + JSON.stringify(library.counts) + '。请运行曲库分析或人工确认纯音乐；疑似人声、未扫描和失败曲目不会自动补入。' + (library.files.find((entry) => entry.analysis?.reason)?.analysis.reason || '');
   await writeState(statePath, state);
   logger.progress?.({ stage: 'scanned', total: videos.length, videosPath, musicPath, outputPath });
   const seenNames = new Set();
-  for (const video of videos) {
+  for (const video of allVideos) {
     const key = path.parse(video).name.toLowerCase();
     if (seenNames.has(key)) throw new Error('视频文件名重复，无法安全生成同名输出: ' + path.basename(video));
     seenNames.add(key);
   }
-  const catalogRows = await Promise.all([...scannedGroups.values()].flat().map(async (file) => {
+  const catalogRows = await Promise.all([...groups.values()].flat().map(async (file) => {
     const stat = await fs.stat(file);
-    return [normalizePath(file), stat.size, stat.mtimeMs];
+    const metadata = options.trackMetadata.get(file);
+    return [normalizePath(file), stat.size, stat.mtimeMs, metadata.status, metadata.cueIn || 0, metadata.intensity || null];
   }));
   const catalogSignature = createHash('sha256').update(JSON.stringify(catalogRows)).digest('hex');
   const results = [];
@@ -982,6 +1197,7 @@ async function runBatch(options, logger = console) {
   logger.log('视频 ' + videos.length + ' 集，BGM ' + [...groups.entries()].map(([mood, tracks]) => mood + ':' + tracks.length).join(' / '));
 
   for (let index = 0; index < videos.length; index += 1) {
+    if (options.signal?.aborted) break;
     const videoPath = videos[index];
     const progress = { index: index + 1, total: videos.length, episode: path.parse(videoPath).name, videoPath };
     const checkingCompleted = options.skipCompleted !== false && state.episodes[normalizePath(videoPath)]?.status === 'completed';
@@ -994,7 +1210,8 @@ async function runBatch(options, logger = console) {
     }
     try {
       const result = await renderEpisode({
-        videoPath, outputDir: outputPath, groups, state, options, catalogSignature,
+        videoPath, outputDir: outputPath, groups, state, options, catalogSignature, libraryUnavailableReason,
+        onStage(stage) { logger.progress?.({ ...progress, stage }); },
         onProcessing() {
           if (!checkingCompleted) return;
           logger.progress?.({ ...progress, status: 'processing' });
@@ -1004,6 +1221,7 @@ async function runBatch(options, logger = console) {
       results.push(result);
       logger.progress?.({ ...progress, ...result });
       logger.log('  ' + result.status + ': ' + result.outputPath);
+      if (result.analysis?.trackCount?.warning) logger.log('  待检查: ' + result.analysis.trackCount.warning);
     } catch (error) {
       const interrupted = options.signal?.aborted || error.name === 'AbortError' || error.code === 'ABORT_ERR';
       const result = { status: interrupted ? 'interrupted' : 'failed', episode: path.parse(videoPath).name, error: interrupted ? '用户中断' : error.message };
@@ -1015,18 +1233,43 @@ async function runBatch(options, logger = console) {
   }
   const summary = {
     generatedAt: new Date().toISOString(),
+    analysisVersion: PLANNING_VERSION,
+    library: { ...library.counts, elapsedMs: libraryElapsedMs, strictInstrumental: options.strictInstrumental !== false, vocalVersion: ANALYSIS_VERSION },
     videos: videos.length,
     completed: results.filter((item) => item.status === 'completed').length,
     skipped: results.filter((item) => item.status === 'skipped').length,
     failed: results.filter((item) => item.status === 'failed').length,
     interrupted: results.filter((item) => item.status === 'interrupted').length,
+    stopped: Boolean(options.signal?.aborted),
+    pending: videos.length - results.length,
     results,
   };
   await fs.writeFile(path.join(outputPath, 'run-summary.json'), JSON.stringify(summary, null, 2) + '\n', 'utf8');
+  await writeBatchReport(outputPath, summary, videos, state);
   logger.progress?.({ stage: 'finished', summary });
   return summary;
 }
+
+async function writeBatchReport(output, summary, videos, state) {
+  const cell = (value) => String(value ?? '—').replace(/[\r\n]+/g, ' ').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\|/g, '\\|').replace(/`/g, "'");
+  const labels = { completed: '完成', skipped: '跳过', failed: '失败', interrupted: '中断', pending: '未处理' };
+  const byEpisode = new Map(summary.results.map((item) => [item.episode, item]));
+  const rows = await Promise.all(videos.map(async (video) => {
+    const episode = path.parse(video).name;
+    const saved = state.episodes[normalizePath(video)] || {};
+    const result = byEpisode.get(episode);
+    const status = result?.status || 'pending';
+    const candidates = ['outputPath', 'finalVideoPath', 'timelinePath', 'transcriptPath'].filter((key) => ({ outputPath: saved.outputAudio, finalVideoPath: saved.outputVideo, timelinePath: saved.outputTimeline, transcriptPath: saved.outputTranscript })[key] !== false).map((key) => saved[key]).filter(Boolean);
+    const artifacts = (await Promise.all(candidates.map(async (file) => await pathExists(file) ? file : ''))).filter(Boolean);
+    return `| ${cell(episode)} | ${labels[status]} | ${cell((saved.tracks || []).filter(Boolean).map((track) => path.basename(track)).join(' / ') || '留白')} | ${cell(saved.mood)} | ${cell(result?.error || (result?.needsRegeneration ? '旧策略产物：已保留，需要重新生成以应用新策略' : saved.analysis?.trackCount?.warning || ''))} | ${cell(artifacts.join(' / '))} |`;
+  }));
+  const errors = summary.results.filter((item) => ['failed', 'interrupted'].includes(item.status));
+  const report = [`# 批次报告`, '', `生成时间：${summary.generatedAt}`, '', `共 ${summary.videos} 集；完成 ${summary.completed}，跳过 ${summary.skipped}，失败 ${summary.failed}，中断 ${summary.interrupted}，未处理 ${summary.pending}。`, '', `分析版本：${summary.analysisVersion}；曲库筛选：${JSON.stringify(summary.library)}。疑似人声数量不是人工确认的人声曲目数。`, '', '| 集数 | 状态 | 使用音乐 | 情绪变化 | 失败原因 / 待检查 | 输出文件 |', '| --- | --- | --- | --- | --- | --- |', ...rows, '', '失败后可使用“仅重试失败项”或“继续未完成”。原始视频和音乐未修改；交付前请试听对白、切点和压低效果。原片音轨被保留，其中是否已有音乐尚未全段听辨，可能与新 BGM 叠加。词级时间和镜头候选不代表剧情语义或逐帧精度。', ''].join('\n');
+  await fs.writeFile(path.join(output, 'run-report.md'), report, 'utf8');
+  await fs.writeFile(path.join(output, 'run-errors.log'), errors.map((item) => `[${item.episode}] ${item.error}`).join('\n') || '本次批次没有失败或中断。\n', 'utf8');
+}
 module.exports = {
+  PLANNING_VERSION,
   AUDIO_EXTENSIONS,
   DEFAULT_TRANSITION_FADE_SECONDS,
   VIDEO_EXTENSIONS,
@@ -1036,13 +1279,16 @@ module.exports = {
   findMoodFolder,
   freezeTailDuration,
   inferMood,
+  inspectMusicCatalog,
   mergeIntervals,
   normalizeTranscript,
+  parseSceneCandidates,
   parseArgs,
   runBatch,
   scanMusic,
   scanVideos,
   usage,
+  writeBatchReport,
 };
 
 

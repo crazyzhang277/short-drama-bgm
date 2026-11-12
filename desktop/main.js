@@ -1,19 +1,22 @@
 'use strict';
 
-const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, clipboard, dialog, ipcMain, shell } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
+const { createAudioClassifier } = require('./audio-classifier');
 const runtime = app.isPackaged ? {
   transcriberExecutable: path.join(process.resourcesPath, 'transcriber', 'bgm-transcriber.exe'),
   modelPath: path.join(process.resourcesPath, 'model', 'small'),
   ffmpeg: path.join(process.resourcesPath, 'ffmpeg', 'ffmpeg.exe'),
   ffprobe: path.join(process.resourcesPath, 'ffmpeg', 'ffprobe.exe'),
 } : {};
+runtime.createAudioClassifier = createAudioClassifier;
+runtime.vocalModelPath = app.isPackaged ? path.join(process.resourcesPath, 'audio', 'yamnet.tflite') : path.resolve(__dirname, '../runtime/audio/yamnet.tflite');
 if (app.isPackaged) {
   process.env.HF_HUB_OFFLINE = '1';
   process.env.TRANSFORMERS_OFFLINE = '1';
 }
-const { episodeDetail, getInfo, inspectBatch, startBatch, stopBatch } = require('./backend/batch-service');
+const { checkMusicLibrary, diagnostics, episodeDetail, getInfo, inspectBatch, resolveImport, startBatch, stopBatch } = require('./backend/batch-service');
 const { RELEASE_URL, createUpdateService } = require('./update-service');
 const { schedulePendingUpdateCleanup } = require('./update-cache');
 
@@ -55,7 +58,7 @@ function sendUpdate(event) {
 }
 
 app.whenReady().then(() => {
-  if (app.isPackaged) {
+  if (app.isPackaged && !require('../package.json').bgmPreview) {
     schedulePendingUpdateCleanup();
     const { CancellationToken, autoUpdater } = require('electron-updater');
     const updateCheckPath = path.join(app.getPath('userData'), 'update-check.json');
@@ -105,6 +108,15 @@ app.whenReady().then(() => {
     return result.canceled ? null : result.filePaths[0];
   });
   ipcMain.handle('batch:inspect', (_event, config) => inspectBatch({ ...config, ...runtime }));
+  ipcMain.handle('music:check', (_event, config) => checkMusicLibrary({ ...config, ...runtime }, (library) => send({ type: 'library-progress', library })));
+  ipcMain.handle('music:review', (_event, config) => require('./backend/batch-service').reviewMusicTrack({ ...config, ...runtime }));
+  ipcMain.handle('music:stop', () => require('./backend/batch-service').stopLibraryAnalysis());
+  ipcMain.handle('paths:import', (_event, input) => resolveImport(input));
+  ipcMain.handle('diagnostics:preview', (_event, config) => diagnostics(config, runtime, { version: app.getVersion(), electron: process.versions.electron }));
+  ipcMain.handle('diagnostics:copy', async (_event, config) => {
+    clipboard.writeText(await diagnostics(config, runtime, { version: app.getVersion(), electron: process.versions.electron }));
+    return { copied: true };
+  });
   ipcMain.handle('batch:start', async (_event, config) => {
     batchStarting = true;
     try { return await startBatch(config, send, runtime); }

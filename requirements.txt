@@ -1,2 +1,3 @@
 faster-whisper==1.2.1
+# Human-voice screening uses the pinned npm MediaPipe WASM runtime; no TensorFlow/PyTorch Python dependency.
 av==18.1.0

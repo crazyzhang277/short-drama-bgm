@@ -4,6 +4,9 @@
 
 ## 模型
 
+- YAMNet float32/1：Google MediaPipe 官方 TFLite 模型，Apache-2.0，4,126,810 字节；SHA-256 `4d8b4a53282dc83ef04e3e7dbc4fbc98082e34e44ed798e16c3a0cdd4c584faf`。来源与校验信息随 `runtime/audio/SOURCE.txt` 分发。
+- `@mediapipe/tasks-audio` 1.2.2：Apache-2.0，使用随 npm 包分发的 JavaScript/WASM CPU 运行组件。音频在本机解码和推理；独立 Electron 会话限制所有网络请求仅访问随机令牌保护的本地资源服务，阻止外部请求与遥测。Apache-2.0 许可文本随应用的 `licenses/` 分发。
+
 - `Systran/faster-whisper-small`，revision `536b0662742c02347bc0e980a01041f333bce120`：Hugging Face 模型卡元数据声明 MIT；该模型卡注明权重由 `openai/whisper-small` 转换而来。该固定 revision 没有单独的 LICENSE 文件；保留其声明 MIT 的原始模型卡，且在 `models/README.md` 记录来源。模型卡和文件保存在 `models/faster-whisper-small.zip.part*` 重组后的归档中。`model.bin` SHA-256 为 `3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671`。
 - `openai/whisper-small`：原始 Hugging Face 模型卡元数据声明 Apache-2.0。该模型被列为转换来源；本项目没有重新训练或声称拥有该模型权重。
 - 项目构建的 faster-whisper / CTranslate2 推理程序分别使用 faster-whisper 1.2.1（MIT）和 CTranslate2 4.8.5（MIT）。faster-whisper 随包的 Silero VAD v6 模型声明采用 MIT；其版权说明见 `licenses/Silero-VAD-MIT.txt`。

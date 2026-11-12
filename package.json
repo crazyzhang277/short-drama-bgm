@@ -1,6 +1,6 @@
 {
   "name": "short-drama-bgm-mvp",
-  "version": "0.2.14",
+  "version": "0.2.15",
   "private": true,
   "description": "Local batch BGM generation MVP for short-drama videos.",
   "main": "desktop/main.js",
@@ -8,6 +8,7 @@
   "scripts": {
     "start": "node src/cli.js",
     "test": "node --test",
+    "test:desktop-ui": "electron tools/check-workbench.cjs",
     "desktop": "electron .",
     "start:desktop": "electron .",
     "dist:win": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-windows.ps1"
@@ -31,6 +32,10 @@
       "package.json"
     ],
     "extraResources": [
+      {
+        "from": "runtime/audio",
+        "to": "audio"
+      },
       {
         "from": "runtime/transcriber/bgm-transcriber",
         "to": "transcriber"
@@ -82,6 +87,7 @@
     "minimatch": "^11.0.1"
   },
   "dependencies": {
+    "@mediapipe/tasks-audio": "1.2.2",
     "electron-updater": "6.8.12"
   }
 }
