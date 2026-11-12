@@ -62,13 +62,16 @@ function recentOptions(key) {
 }
 
 function preflightChecks() {
+  if (state.config.preflightEnabled === false) return [];
   const paths = state.data.paths || {};
   const musicCount = (state.data.musicGroups || []).reduce((sum, group) => sum + group.count, 0);
-  const usableCount = state.library?.usable ?? musicCount;
+  const strict = state.config.strictInstrumental !== false;
+  const library = state.library?.strictInstrumental === strict ? state.library : null;
+  const usableCount = library?.usable ?? musicCount;
   const outputsReady = [state.config.outputAudio, state.config.outputVideo, state.config.outputTimeline].some(Boolean) || (state.config.outputTranscript && state.config.transcribe);
   const checks = [
     { name: '视频', ok: paths.videos?.status === 'available' && state.data.inputVideoCount > 0, label: state.data.inputVideoCount ? `找到 ${state.data.inputVideoCount} 个视频` : paths.videos?.status === 'available' ? '目录中没有支持的视频' : paths.videos?.label || '未选择', action: 'choose-videos', fix: '选择视频目录' },
-    { name: 'BGM', ok: paths.music?.status === 'available' && usableCount > 0, label: state.library ? `当前可选 ${usableCount} / ${musicCount} 首` : musicCount ? `${musicCount} 首 · ${state.config.strictInstrumental !== false ? '开始时核验纯音乐' : '允许未确认曲目'}` : '未选择或没有可用曲目', action: musicCount ? 'analyze-library' : 'choose-music', fix: musicCount ? '筛选或人工确认曲目' : '选择音乐目录' },
+    { name: 'BGM', ok: paths.music?.status === 'available' && usableCount > 0, label: library ? `当前可选 ${usableCount} / ${musicCount} 首` : musicCount ? `${musicCount} 首 · ${strict ? '开始时筛选人声' : '允许含人声曲目'}` : '未选择或没有可用曲目', action: musicCount ? strict ? 'analyze-library' : 'check-library' : 'choose-music', fix: musicCount ? strict ? '筛选或人工确认曲目' : '检查音乐库健康' : '选择音乐目录' },
     { name: '输出', ok: paths.output?.status === 'available', label: paths.output?.status === 'available' ? '可写入' : paths.output?.label || '未选择', action: 'choose-output', fix: '选择输出目录' },
     { name: '转录模型', ok: !state.config.transcribe || Boolean(state.data.model?.exists), label: !state.config.transcribe ? '本地转录已关闭' : state.data.model?.exists ? `已就绪 · ${formatBytes(state.data.model.sizeBytes)}` : '模型不可用', action: state.bundledRuntime ? 'disable-transcribe' : 'choose-model', fix: state.bundledRuntime ? '关闭本地转录' : '选择模型' },
     { name: '输出内容', ok: outputsReady, label: outputsReady ? '已选择有效输出' : '至少选择一种输出；仅转录时需开启本地转录', action: 'set-view', view: 'settings', fix: '选择输出内容' },
@@ -88,12 +91,13 @@ function renderPreflight() {
 
 function renderPreflightChecks() {
   const checks = preflightChecks();
-  return `${state.preflightPending ? '<p class="config-note" role="status">正在检查当前配置…</p>' : ''}${checks.map((check) => `<div class="preflight-row"><span>${check.name}</span><strong class="preflight-state ${check.ok ? 'available' : 'unavailable'}">${check.ok ? '✓' : '!'} ${escapeHtml(check.label)}</strong>${check.ok ? '' : `<button class="button compact ghost" data-action="${check.action}" ${check.view ? `data-view="${check.view}"` : ''}>${check.fix}</button>`}</div>`).join('')}<div class="config-note">${state.data.warning ? escapeHtml(state.data.warning) : '原始视频和音乐保持不变；已有手工文件受覆盖保护。'}</div><button class="button ghost" data-action="check-library" ${state.checkingLibrary || state.running ? 'disabled' : ''}>检查音乐库健康</button> <button class="button" data-action="analyze-library" ${state.checkingLibrary || state.running ? 'disabled' : ''}>整库人声筛选</button>${state.checkingLibrary ? `<p role="status">${state.libraryProgress ? `分析 ${state.libraryProgress.checked} / ${state.libraryProgress.total} 首` : '正在检查音乐库…'} <button class="button compact ghost" data-action="stop-library">停止，保留已分析结果</button></p>` : ''}`;
+  const automatic = state.config.preflightEnabled === false ? '<p class="config-note" role="status">开始前检测已关闭，启动时直接进入批次处理。</p>' : `${state.preflightPending ? '<p class="config-note" role="status">正在检查当前配置…</p>' : ''}${checks.map((check) => `<div class="preflight-row"><span>${check.name}</span><strong class="preflight-state ${check.ok ? 'available' : 'unavailable'}">${check.ok ? '✓' : '!'} ${escapeHtml(check.label)}</strong>${check.ok ? '' : `<button class="button compact ghost" data-action="${check.action}" ${check.view ? `data-view="${check.view}"` : ''}>${check.fix}</button>`}</div>`).join('')}${state.data.warning ? `<p class="config-note">${escapeHtml(state.data.warning)}</p>` : ''}`;
+  return `${automatic}<div class="config-note">原始视频和音乐保持不变；已有手工文件受覆盖保护。</div><button class="button ghost" data-action="check-library" ${state.checkingLibrary || state.running ? 'disabled' : ''}>检查音乐库健康</button> <button class="button" data-action="analyze-library" ${state.checkingLibrary || state.running || state.config.strictInstrumental === false ? 'disabled' : ''} ${state.config.strictInstrumental === false ? 'title="人声筛选已关闭，开启后可分析"' : ''}>整库人声筛选</button>${state.config.strictInstrumental === false ? '<p class="config-note">人声筛选已关闭，开启后可分析</p>' : ''}${state.checkingLibrary ? `<p role="status">${state.libraryProgress ? `分析 ${state.libraryProgress.checked} / ${state.libraryProgress.total} 首` : '正在检查音乐库…'} <button class="button compact ghost" data-action="stop-library">停止，保留已分析结果</button></p>` : ''}`;
 }
 
 function renderLibraryHealth() {
   const library = state.library;
-  if (!library) return '<p class="config-note">严格模式仅使用人工确认或整曲分析通过的纯音乐。首次筛选覆盖整首音频，后续复用缓存；不确定或失败曲目会被排除。</p>';
+  if (!library) return `<p class="config-note">${state.config.strictInstrumental !== false ? '严格模式仅使用人工确认或整曲分析通过的纯音乐。首次筛选覆盖整首音频，后续复用缓存；不确定或失败曲目会被排除。' : '不检测、不按人声状态排除；含歌唱、哼唱或口播的音乐也可参与选曲。人工禁用仍有效，保留已有分析、入点与强度。'}</p>`;
   const problems = library.files.filter((file) => !file.playable || file.tooShort);
   const labels = { confirmed: '人工确认纯音乐', instrumental: '纯音乐候选', vocal: '疑似人声', unknown: '未确定', disabled: '已禁用' };
   return `<div class="library-health"><p role="status">共 ${library.total} 首，当前可选 ${library.usable} 首。${Object.entries(labels).map(([key, label]) => `${label} ${library.files.filter((file) => (file.status || 'unknown') === key).length}`).join(' · ')}</p>${library.emptyDirectories.length ? `<p>空目录：${library.emptyDirectories.map(escapeHtml).join('、')}</p>` : ''}<ul>${problems.map((file) => `<li>${escapeHtml(shortPath(file.file, 80))}：${escapeHtml(file.reason || '不足 2 秒，循环使用可能明显')}</li>`).join('')}${library.duplicates.map((file) => `<li>内容重复：${escapeHtml(shortPath(file.file, 60))}</li>`).join('')}</ul><details><summary>曲目筛选、试听和人工确认</summary><label for="library-search">搜索曲名或筛选状态</label><input id="library-search" class="text-input" type="search" value="${escapeHtml(state.libraryQuery)}" placeholder="例如：疑似人声 / City lights"><div class="library-track-list">${library.files.map((file, index) => {
@@ -215,6 +219,12 @@ function formatSeconds(value) {
   return `${String(mins).padStart(2, '0')}:${rest.toFixed(1).padStart(4, '0')}`;
 }
 
+function musicMoodLabel(segment) {
+  const mood = segment.detected_mood || (segment.mood_fallback === 'true' ? '未确定（回退）' : segment.mood || '未标注');
+  const source = { 'neutral-bed': '（叙事铺底）', 'scene-context': '（场景建议）' }[segment.mood_source] || '';
+  return mood + source;
+}
+
 function formatBytes(value) {
   const bytes = Number(value);
   if (!bytes) return '未知大小';
@@ -325,6 +335,7 @@ function loadConfig(defaults) {
     overwrite: Boolean(stored.overwrite),
     autoDuck: stored.autoDuck === undefined ? defaults.autoDuck !== false : Boolean(stored.autoDuck),
     strictInstrumental: stored.strictInstrumental === undefined ? true : Boolean(stored.strictInstrumental),
+    preflightEnabled: stored.preflightEnabled === undefined ? true : Boolean(stored.preflightEnabled),
     scenePriority: stored.scenePriority === undefined ? defaults.scenePriority !== false : Boolean(stored.scenePriority),
     skipCompleted: stored.skipCompleted !== undefined ? Boolean(stored.skipCompleted) : defaults.skipCompleted !== false,
     freezeTail: typeof stored.freezeTail === 'string' ? stored.freezeTail : '0:00',
@@ -349,11 +360,11 @@ function selectedRow() {
 async function refresh(quiet = false, live = false) {
   const sequence = ++refreshSequence;
   const config = { ...state.config };
-  state.preflightPending = true;
+  state.preflightPending = config.preflightEnabled !== false;
   renderChrome();
   try {
     const data = await api.inspectBatch(config);
-    if (sequence !== refreshSequence) return;
+    if (sequence !== refreshSequence || JSON.stringify(config) !== JSON.stringify(state.config)) return;
     state.data = data;
     state.preflightPending = false;
     if (!state.selectedEpisode || !state.data.rows.some((row) => row.episode === state.selectedEpisode)) {
@@ -364,7 +375,7 @@ async function refresh(quiet = false, live = false) {
     else render(true);
     if (!quiet && state.data.warning) showToast(state.data.warning, true);
   } catch (error) {
-    if (sequence !== refreshSequence) return;
+    if (sequence !== refreshSequence || JSON.stringify(config) !== JSON.stringify(state.config)) return;
     state.preflightPending = false;
     state.data.warning = error.message;
     showToast(error.message, true);
@@ -400,12 +411,12 @@ function renderDesk() {
     <div class="panel progress-panel"><div class="panel-body" id="batch-progress" role="status" aria-live="polite">${renderProgress()}</div><div class="recovery-actions"><button class="button" data-action="continue-unfinished" ${state.running ? 'disabled' : ''}>继续未完成</button><button class="button ghost" data-action="retry-failed" ${state.running ? 'disabled' : ''}>仅重试失败项</button><button class="button ghost" data-action="open-report" ${state.data.reportPath ? '' : 'disabled'}>打开批次报告</button><button class="button ghost" data-action="open-error-log" ${state.data.errorLogPath ? '' : 'disabled'}>打开错误日志</button></div></div>
     <div class="layout-2">
       <div>
-        <div class="panel"><div class="panel-head"><strong>开始前检查</strong><small>失败项旁可直接修复</small></div><div class="panel-body"><div class="preflight" id="preflight-content" role="group" aria-label="开始前检查清单">${renderPreflight()}</div></div></div>
+        <div class="panel"><div class="panel-head"><strong>开始前检查</strong><div class="header-actions"><small>开始前检测</small><label class="switch"><input id="config-preflightEnabled" type="checkbox" aria-label="开始前检测" data-config-key="preflightEnabled" ${state.config.preflightEnabled !== false ? 'checked' : ''}><span></span></label></div></div><div class="panel-body"><div class="preflight" id="preflight-content" role="group" aria-label="开始前检查清单">${renderPreflight()}</div></div></div>
 <div class="panel"><div class="panel-head"><strong>批次队列</strong><small id="queue-count"></small></div><div class="queue-toolbar"><label for="queue-search">集数搜索</label><input id="queue-search" class="text-input" type="search" placeholder="输入集数名称" value="${escapeHtml(state.queueQuery)}"><label for="queue-filter">状态</label><select id="queue-filter" class="select-input">${[["all","全部"],["pending","待处理"],["checking","核验中"],["processing","处理中"],["completed","已完成"],["skipped","已跳过"],["failed","失败"],["interrupted","已中断"]].map(([value,label]) => `<option value="${value}" ${state.queueFilter === value ? "selected" : ""}>${label}</option>`).join("")}</select></div><div class="queue-scroll"><table class="queue-table"><thead><tr><th>集数</th><th>状态</th><th>时长</th><th>情绪 / 音乐</th><th>产物</th><th></th></tr></thead><tbody id="queue-body"></tbody></table></div><div id="queue-empty" class="empty-state">没有匹配的集数；可选择视频，或调整搜索与筛选。</div></div>
 <div class="panel"><div class="panel-head"><strong>运行日志</strong><small>最近 100 条 · 自动更新</small></div><div id="run-logs" class="log-box" role="log" aria-label="批次运行日志" aria-live="polite"></div></div>
       </div>
       <aside>
-        <div class="panel"><div class="panel-head"><strong>运行配置</strong><small>路径栏支持拖入与最近记录</small></div><div class="panel-body"><label for="config-preset">配置预设</label><select id="config-preset" class="select-input"><option value="">选择预设</option>${Object.entries(PRESETS).map(([key,preset]) => `<option value="${key}">${preset.label}</option>`).join("")}</select><p class="config-note">预设只修改现有参数；不会更改目录或开启覆盖。</p><div class="drop-zone" tabindex="0" role="region" aria-label="拖放导入">拖入视频、音频或目录自动识别；也可拖到对应路径栏。</div><div class="path-stack">${videoConfigInput()}${configInput('music', '背景音乐', 'choose-music')}<details class="config-details"><summary>自动选曲与音量处理</summary><p>先筛选纯音乐，再匹配情绪和人工强度，最后减少重复；相近需求连续播放，曲目不足时用中性曲目或留白。</p></details>${configInput('output', '输出', 'choose-output')}${configInput('transcripts', '字幕', 'choose-transcripts')}${state.bundledRuntime ? '' : configInput('modelPath', '模型', 'choose-model')}</div><div class="config-note" id="model-note"><strong>${state.config.transcribe ? (model.exists ? '转录模型可访问' : '转录模型不可访问') : '本地转录未启用'}</strong> · ${escapeHtml(state.bundledRuntime ? '随应用内置' : shortPath(model.path || state.config.modelPath, 42))}<br>${model.exists ? `${formatBytes(model.sizeBytes)} · ${escapeHtml(state.config.language === 'auto' ? '自动识别' : state.config.language)} · 本机低精度处理` : '勾选本地转录后需要可用的模型目录'}</div><div class="switch-row"><div class="switch-label"><b>本地语音转录</b><small>生成转录文本与时间点，辅助情绪判断</small></div><label class="switch"><input type="checkbox" aria-label="本地语音转录" data-config-key="transcribe" ${state.config.transcribe ? 'checked' : ''}><span></span></label></div><div class="switch-row"><div class="switch-label"><b>严格纯音乐</b><small>排除疑似人声、未确定和分析失败的曲目</small></div><label class="switch"><input type="checkbox" aria-label="严格纯音乐" data-config-key="strictInstrumental" ${state.config.strictInstrumental ? 'checked' : ''}><span></span></label></div><div class="switch-row"><div class="switch-label"><b>对白时自动压低背景音乐</b><small>响度处理后执行压低；只在已有对白时间区间生效。</small></div><label class="switch"><input type="checkbox" aria-label="对白时自动压低背景音乐" data-config-key="autoDuck" ${state.config.autoDuck ? 'checked' : ''}><span></span></label></div><div class="switch-row"><div class="switch-label"><b>允许覆盖已有结果</b><small>默认保护手工文件，恢复运行无需覆盖</small></div><label class="switch"><input type="checkbox" aria-label="允许覆盖已有结果" data-config-key="overwrite" ${state.config.overwrite ? 'checked' : ''}><span></span></label></div><details class="config-details"><summary>高级音频参数</summary><div class="advanced-grid"><div class="field"><label for="config-fadeIn">淡入时长</label><input id="config-fadeIn" class="number-input" data-config-key="fadeIn" type="number" min="0" step=".1" value="${escapeHtml(state.config.fadeIn)}"></div><div class="field"><label for="config-fadeOut">淡出时长</label><input id="config-fadeOut" class="number-input" data-config-key="fadeOut" type="number" min="0" step=".1" value="${escapeHtml(state.config.fadeOut)}"></div><div class="field"><label for="config-freezeTail">片尾定格（秒:帧）</label><input id="config-freezeTail" class="text-input" data-config-key="freezeTail" type="text" inputmode="numeric" placeholder="0:00" value="${escapeHtml(state.config.freezeTail)}"><small class="field-note">例：2:15 表示 2 秒 15 帧，按输入视频帧率换算</small></div></div></details></div></div>
+        <div class="panel"><div class="panel-head"><strong>运行配置</strong><small>路径栏支持拖入与最近记录</small></div><div class="panel-body"><label for="config-preset">配置预设</label><select id="config-preset" class="select-input"><option value="">选择预设</option>${Object.entries(PRESETS).map(([key,preset]) => `<option value="${key}">${preset.label}</option>`).join("")}</select><p class="config-note">预设只修改现有参数；不会更改目录或开启覆盖。</p><div class="drop-zone" tabindex="0" role="region" aria-label="拖放导入">拖入视频、音频或目录自动识别；也可拖到对应路径栏。</div><div class="path-stack">${videoConfigInput()}${configInput('music', '背景音乐', 'choose-music')}<details class="config-details"><summary>自动选曲与音量处理</summary><p>${state.config.strictInstrumental !== false ? "先筛选纯音乐，再匹配情绪和人工强度" : "匹配情绪和人工强度，不按人声状态排除"}，最后减少重复；相近需求连续播放，曲目不足时用中性曲目或留白。</p></details>${configInput('output', '输出', 'choose-output')}${configInput('transcripts', '字幕', 'choose-transcripts')}${state.bundledRuntime ? '' : configInput('modelPath', '模型', 'choose-model')}</div><div class="config-note" id="model-note"><strong>${state.config.transcribe ? (state.config.preflightEnabled === false ? '启动时加载转录模型' : model.exists ? '转录模型可访问' : '转录模型不可访问') : '本地转录未启用'}</strong> · ${escapeHtml(state.bundledRuntime ? '随应用内置' : shortPath(model.path || state.config.modelPath, 42))}<br>${state.config.preflightEnabled === false ? '已跳过模型预检；启动时按当前配置加载' : model.exists ? `${formatBytes(model.sizeBytes)} · ${escapeHtml(state.config.language === 'auto' ? '自动识别' : state.config.language)} · 本机低精度处理` : '勾选本地转录后需要可用的模型目录'}</div><div class="switch-row"><div class="switch-label"><b>本地语音转录</b><small>生成转录文本与时间点，辅助情绪判断</small></div><label class="switch"><input type="checkbox" aria-label="本地语音转录" data-config-key="transcribe" ${state.config.transcribe ? 'checked' : ''}><span></span></label></div><div class="switch-row"><div class="switch-label"><b>BGM 人声/歌词筛选</b><small>${state.config.strictInstrumental !== false ? "检测并排除疑似人声、未确定和分析失败的音乐。" : "不检测、不按人声状态排除；含歌唱、哼唱或口播的音乐也可参与选曲。"}</small></div><label class="switch"><input type="checkbox" aria-label="BGM 人声/歌词筛选" data-config-key="strictInstrumental" ${state.config.strictInstrumental ? 'checked' : ''}><span></span></label></div><div class="switch-row"><div class="switch-label"><b>对白时自动压低背景音乐</b><small>响度处理后执行压低；只在已有对白时间区间生效。</small></div><label class="switch"><input type="checkbox" aria-label="对白时自动压低背景音乐" data-config-key="autoDuck" ${state.config.autoDuck ? 'checked' : ''}><span></span></label></div><div class="switch-row"><div class="switch-label"><b>允许覆盖已有结果</b><small>默认保护手工文件，恢复运行无需覆盖</small></div><label class="switch"><input type="checkbox" aria-label="允许覆盖已有结果" data-config-key="overwrite" ${state.config.overwrite ? 'checked' : ''}><span></span></label></div><details class="config-details"><summary>高级音频参数</summary><div class="advanced-grid"><div class="field"><label for="config-fadeIn">淡入时长</label><input id="config-fadeIn" class="number-input" data-config-key="fadeIn" type="number" min="0" step=".1" value="${escapeHtml(state.config.fadeIn)}"></div><div class="field"><label for="config-fadeOut">淡出时长</label><input id="config-fadeOut" class="number-input" data-config-key="fadeOut" type="number" min="0" step=".1" value="${escapeHtml(state.config.fadeOut)}"></div><div class="field"><label for="config-freezeTail">片尾定格（秒:帧）</label><input id="config-freezeTail" class="text-input" data-config-key="freezeTail" type="text" inputmode="numeric" placeholder="0:00" value="${escapeHtml(state.config.freezeTail)}"><small class="field-note">例：2:15 表示 2 秒 15 帧，按输入视频帧率换算</small></div></div></details></div></div>
         <div class="panel" id="selected-episode-panel">${renderSelectedEpisode()}</div>
       </aside>
     </div>
@@ -419,7 +430,7 @@ function renderSettings() {
     ['outputTimeline', '选曲时间轴（CSV）', '记录每段音乐、时间范围与选曲原因。'],
     ['outputTranscript', '转录文本（JSON）', '仅在开启本地转录时输出识别结果。'],
   ];
-  return `<section class="view"><div class="view-header"><div><h1>设置</h1></div></div><div class="layout-2"><div class="panel"><div class="panel-head"><strong>输出内容</strong><small>设置会保存在本机</small></div><div class="panel-body">${outputs.map(([key, label, note]) => `<div class="switch-row"><div class="switch-label"><b>${label}</b><small>${note}</small></div><label class="switch"><input type="checkbox" aria-label="${escapeHtml(label)}" data-config-key="${key}" ${state.config[key] ? 'checked' : ''}><span></span></label></div>`).join('')}<div class="switch-row"><div class="switch-label"><b>跳过已完成</b><small>默认开启；已有产物有效时不重复处理</small></div><label class="switch"><input type="checkbox" aria-label="跳过已完成" data-config-key="skipCompleted" ${state.config.skipCompleted ? 'checked' : ''}><span></span></label></div><div class="config-note">未勾选的类型不会生成；修改 BGM 或选曲设置后，如需重新生成已完成集数，请先关闭“跳过已完成”。</div></div></div><aside><div class="panel"><div class="panel-head"><strong>每集 BGM 数量</strong><small>至少 ${state.config.minTracksPerEpisode} 首 · ${state.config.scenePriority ? '转场必换，不设上限' : `最多 ${state.config.maxTracksPerEpisode === 0 ? '不限制' : `${state.config.maxTracksPerEpisode} 段`}`}</small></div><div class="panel-body"><div class="field"><label for="config-minTracksPerEpisode">每集至少使用不同曲目（首）</label><input id="config-minTracksPerEpisode" class="number-input" data-config-key="minTracksPerEpisode" type="number" min="1" step="1" required value="${escapeHtml(state.config.minTracksPerEpisode)}"><small class="field-note">优先在转场或停顿处补足；时长或匹配曲目不足时明确提示。</small></div><div class="field"><label for="config-maxTracksPerEpisode">每集最多配乐片段</label><input id="config-maxTracksPerEpisode" class="number-input" data-config-key="maxTracksPerEpisode" type="number" min="0" step="1" required value="${escapeHtml(state.config.maxTracksPerEpisode)}" ${state.config.scenePriority ? 'disabled' : ''}><small class="field-note">${state.config.scenePriority ? '转场必换曲已开启：上限暂停，关闭后恢复。' : '0 表示不限制片段数；下限不能高于上限。'}</small><details class="field-help"><summary>选曲方式</summary><p>开启“转场必换曲”后，识别出的场景转场必须更换曲目，情绪变化也继续换曲；相邻转场和情绪变化不受片段上限或 12 秒间隔拦截。普通对白切镜不等同于场景转场。关闭后按情绪规则和数量上限规划。下限始终按不同曲目补足，补足段最短 6 秒；只使用匹配情绪或中性的合格音乐，必换点无其他合格曲目时明确报错。</p></details></div></div></div><div class="panel"><div class="panel-head"><strong>换曲与衔接</strong><small>${state.config.transitionFadeEnabled ? '已开启' : '已关闭'}</small></div><div class="panel-body"><div class="switch-row"><div class="switch-label"><b>转场必换曲</b><small>转场必须换，情绪变化也换；开启时暂停片段上限</small></div><label class="switch"><input id="config-scenePriority" type="checkbox" aria-label="转场必换曲" data-config-key="scenePriority" ${state.config.scenePriority ? 'checked' : ''}><span></span></label></div><div class="switch-row"><div class="switch-label"><b>切换曲目时淡入淡出</b><small>上一段淡出，同时让下一段淡入</small></div><label class="switch"><input type="checkbox" aria-label="切换曲目时淡入淡出" data-config-key="transitionFadeEnabled" ${state.config.transitionFadeEnabled ? 'checked' : ''}><span></span></label></div><div class="field"><label for="config-transitionFadeDuration">衔接时长（秒）</label><input id="config-transitionFadeDuration" class="number-input" data-config-key="transitionFadeDuration" type="number" min="0" step="0.1" required value="${escapeHtml(state.config.transitionFadeDuration)}" ${state.config.transitionFadeEnabled ? '' : 'disabled'}><small class="field-note">衔接时长不超过较短配乐片段的一半。</small></div></div></div><div class="panel"><div class="panel-head"><strong>常用操作</strong></div><div class="panel-body"><button class="button ghost" data-action="open-path" data-path="${escapeHtml(state.config.output || '')}" ${state.config.output ? '' : 'disabled'}>打开输出目录</button></div></div></aside></div></section>`;
+  return `<section class="view"><div class="view-header"><div><h1>设置</h1></div></div><div class="layout-2"><div class="panel"><div class="panel-head"><strong>输出内容</strong><small>设置会保存在本机</small></div><div class="panel-body">${outputs.map(([key, label, note]) => `<div class="switch-row"><div class="switch-label"><b>${label}</b><small>${note}</small></div><label class="switch"><input type="checkbox" aria-label="${escapeHtml(label)}" data-config-key="${key}" ${state.config[key] ? 'checked' : ''}><span></span></label></div>`).join('')}<div class="switch-row"><div class="switch-label"><b>跳过已完成</b><small>默认开启；已有产物有效时不重复处理</small></div><label class="switch"><input type="checkbox" aria-label="跳过已完成" data-config-key="skipCompleted" ${state.config.skipCompleted ? 'checked' : ''}><span></span></label></div><div class="config-note">未勾选的类型不会生成；修改 BGM 或选曲设置后，如需重新生成已完成集数，请先关闭“跳过已完成”。</div></div></div><aside><div class="panel"><div class="panel-head"><strong>每集 BGM 数量</strong><small>至少 ${state.config.minTracksPerEpisode} 首 · 最多 ${state.config.maxTracksPerEpisode === 0 ? '不限制' : `${state.config.maxTracksPerEpisode} 段`}${state.config.scenePriority ? ' · 转场可超限' : ''}</small></div><div class="panel-body"><div class="field"><label for="config-minTracksPerEpisode">每集至少使用不同曲目（首）</label><input id="config-minTracksPerEpisode" class="number-input" data-config-key="minTracksPerEpisode" type="number" min="1" step="1" required value="${escapeHtml(state.config.minTracksPerEpisode)}"><small class="field-note">优先在转场或停顿处补足；时长或匹配曲目不足时明确提示。</small></div><div class="field"><label for="config-maxTracksPerEpisode">每集最多配乐片段</label><input id="config-maxTracksPerEpisode" class="number-input" data-config-key="maxTracksPerEpisode" type="number" min="0" step="1" required value="${escapeHtml(state.config.maxTracksPerEpisode)}"><small class="field-note">0 表示不限制；普通情绪换曲遵守上限，转场必换可超限并明确提示。下限不能高于上限。</small><details class="field-help"><summary>选曲方式</summary><p>开启“转场必换曲”后，识别出的场景转场必须更换曲目，情绪变化也继续换曲；普通情绪换曲遵守片段上限和防频繁换曲间隔；必换转场优先，超出上限时显示实际段数及超出数量。普通对白切镜不等同于场景转场。关闭后按情绪规则和数量上限规划。下限始终按不同曲目补足，补足段最短 6 秒；只使用匹配情绪或中性的合格音乐，必换点无其他合格曲目时明确报错。</p></details></div></div></div><div class="panel"><div class="panel-head"><strong>换曲与衔接</strong><small>${state.config.transitionFadeEnabled ? '已开启' : '已关闭'}</small></div><div class="panel-body"><div class="switch-row"><div class="switch-label"><b>转场必换曲</b><small>转场必须换，情绪变化也换；普通情绪遵守上限，必换转场超限会提示</small></div><label class="switch"><input id="config-scenePriority" type="checkbox" aria-label="转场必换曲" data-config-key="scenePriority" ${state.config.scenePriority ? 'checked' : ''}><span></span></label></div><div class="switch-row"><div class="switch-label"><b>切换曲目时淡入淡出</b><small>上一段淡出，同时让下一段淡入</small></div><label class="switch"><input type="checkbox" aria-label="切换曲目时淡入淡出" data-config-key="transitionFadeEnabled" ${state.config.transitionFadeEnabled ? 'checked' : ''}><span></span></label></div><div class="field"><label for="config-transitionFadeDuration">衔接时长（秒）</label><input id="config-transitionFadeDuration" class="number-input" data-config-key="transitionFadeDuration" type="number" min="0" step="0.1" required value="${escapeHtml(state.config.transitionFadeDuration)}" ${state.config.transitionFadeEnabled ? '' : 'disabled'}><small class="field-note">衔接时长不超过较短配乐片段的一半。</small></div></div></div><div class="panel"><div class="panel-head"><strong>常用操作</strong></div><div class="panel-body"><button class="button ghost" data-action="open-path" data-path="${escapeHtml(state.config.output || '')}" ${state.config.output ? '' : 'disabled'}>打开输出目录</button></div></div></aside></div></section>`;
 }
 
 function renderAbout() {
@@ -457,7 +468,7 @@ function renderTimeline() {
 function renderAnalysisEvidence(detail) {
   const analysis = detail.analysis;
   if (!analysis) return '<div class="notice">旧版产物：尚未使用本轮策略重新生成。</div>';
-  return `<div class="inspector-card"><h3>本次分析依据</h3><p>纯音乐：${analysis.strictInstrumental ? '严格筛选' : '允许未确认曲目'} · 时间：${analysis.wordTimestamps ? '词级时间' : '句段时间，需抽查'} · 压低：${analysis.ducking?.enabled ? `${analysis.ducking.db} dB` : '未生效'}</p>${analysis.sceneError ? `<p>${escapeHtml(analysis.sceneError)}</p>` : ''}<p>转场必换：${analysis.scenePriority ? '开启' : '关闭'}${analysis.trackCount ? ` · 实际 ${analysis.trackCount.actual} 首 / ${analysis.trackCount.segments} 段 · 下限 ${analysis.trackCount.minimum} 首` : ''}</p>${analysis.trackCount?.warning ? `<p class="notice error-text">${escapeHtml(analysis.trackCount.warning)}</p>` : ''}<details><summary>镜头候选与换歌依据（${analysis.sceneCandidates?.length || 0} 处）</summary>${(analysis.sceneCandidates || []).map((cut) => `<p>${formatSeconds(cut.time)} · ${cut.required ? '场景转场（必换）' : '镜头候选'} · ${cut.used ? '已换曲' : '保留原曲'}</p>`).join('')}${(analysis.segments || []).map((segment) => `<p>${formatSeconds(segment.start)}–${formatSeconds(segment.end)} · ${escapeHtml(segment.reason)} · 入点 ${segment.cueIn || 0} 秒${segment.review ? ' · 待检查' : ''}</p>`).join('')}</details><p class="config-note">原音轨保留；原片是否已有音乐尚需听辨。规则不理解地点或时间跳跃的含义。</p></div>`;
+  return `<div class="inspector-card"><h3>本次分析依据</h3><p>纯音乐：${analysis.strictInstrumental ? '严格筛选' : '允许未确认曲目'} · 时间：${analysis.wordTimestamps ? '词级时间' : '句段时间，需抽查'} · 压低：${analysis.ducking?.enabled ? `${analysis.ducking.db} dB` : '未生效'}</p>${analysis.sceneError ? `<p>${escapeHtml(analysis.sceneError)}</p>` : ''}<p>转场必换：${analysis.scenePriority ? '开启' : '关闭'}${analysis.trackCount ? ` · 实际 ${analysis.trackCount.actual} 首 / ${analysis.trackCount.segments} 段 · 下限 ${analysis.trackCount.minimum} 首${analysis.trackCount.maximum !== undefined ? ' · 上限 ' + (analysis.trackCount.maximum || '不限') + (analysis.trackCount.maximum ? ' 段' : '') : ''}` : ''}</p>${analysis.trackCount?.warning ? `<p class="notice error-text">${escapeHtml(analysis.trackCount.warning)}</p>` : ''}<details><summary>镜头候选与换歌依据（${analysis.sceneCandidates?.length || 0} 处）</summary>${(analysis.sceneCandidates || []).map((cut) => `<p>${formatSeconds(cut.time)} · ${cut.required ? '场景转场（必换）' : '镜头候选'} · ${cut.used ? '已换曲' : '保留原曲'}</p>`).join('')}${(analysis.segments || []).map((segment) => `<p>${formatSeconds(segment.start)}–${formatSeconds(segment.end)} · ${escapeHtml(segment.reason)} · 入点 ${segment.cueIn || 0} 秒${segment.review ? ' · 待检查' : ''}</p>`).join('')}</details><p class="config-note">原音轨保留；原片是否已有音乐尚需听辨。规则不理解地点或时间跳跃的含义。</p></div>`;
 }
 
 function renderPlayers(detail) {
@@ -477,9 +488,9 @@ function renderTranscript() {
   const linesHtml = lines.map((line, lineIndex) => {
     const at = (line.start + line.end) / 2;
     const music = detail.timeline.find((item) => at >= item.start && at < item.end) || {};
-    return `<button type="button" class="transcript-line ${lineIndex === index ? 'selected' : ''}" aria-pressed="${lineIndex === index}" data-action="select-transcript" data-index="${lineIndex}"><span class="transcript-time">${formatSeconds(line.start)}<br>${formatSeconds(line.end)}</span><span class="transcript-text">${escapeHtml(line.text)}</span><span class="transcript-tag">${escapeHtml(music.mood || '未标注')}</span></button>`;
+    return `<button type="button" class="transcript-line ${lineIndex === index ? 'selected' : ''}" aria-pressed="${lineIndex === index}" data-action="select-transcript" data-index="${lineIndex}"><span class="transcript-time">${formatSeconds(line.start)}<br>${formatSeconds(line.end)}</span><span class="transcript-text">${escapeHtml(line.text)}</span><span class="transcript-tag">${escapeHtml(musicMoodLabel(music))}</span></button>`;
   }).join('');
-  return `<section class="view"><div class="detail-heading"><div><button class="back-link" data-action="set-view" data-view="desk">← 批次控制台</button><h1>对白审阅 <span class="muted">/ ${escapeHtml(detail.episode)}</span></h1></div><div class="detail-actions"><button class="button ghost" data-action="open-timeline" data-episode="${escapeHtml(detail.episode)}">时间轴</button>${detail.transcriptPath ? `<button class="button ghost" data-action="open-path" data-path="${escapeHtml(detail.transcriptPath)}">打开转录文本</button>` : ''}</div></div><div class="transcript-layout"><div class="panel transcript-panel"><div class="panel-head"><strong>对白句段 · ${lines.length}</strong><small>${escapeHtml(detail.mood || '情绪待判定')}</small></div><div class="panel-body transcript-scroll" role="region" aria-label="对白句段" tabindex="0"><div class="transcript-list">${linesHtml || '<div class="empty-state">没有转录句段；本集可能没有音轨或尚未开启转录。</div>'}</div></div></div><aside class="transcript-side">${renderPlayers(detail)}<div class="reason-card"><h3>音乐书签</h3><div class="big" id="bookmark-time">${current ? formatSeconds(current.start) : '—'}</div><p id="bookmark-reason">${escapeHtml(segment.selection_reason || '选择一个句段查看选曲原因。')}</p><div class="inspector-row"><span>当前背景音乐</span><b id="bookmark-track">${escapeHtml(String(segment.bgm_file || '').split(/[\\/]/).pop() || '—')}</b></div><div class="inspector-row"><span>当前情绪</span><b id="bookmark-mood">${escapeHtml(segment.mood || '—')}</b></div><button class="button primary bookmark-jump" data-action="jump-to-line">跳到时间轴</button></div><div class="notice"><b>审阅提示</b><br>关键词规则只提供线索，不代表完整剧情理解；请试听对白清晰度、切点和压低效果后再交付。</div></aside></div></section>`;
+  return `<section class="view"><div class="detail-heading"><div><button class="back-link" data-action="set-view" data-view="desk">← 批次控制台</button><h1>对白审阅 <span class="muted">/ ${escapeHtml(detail.episode)}</span></h1></div><div class="detail-actions"><button class="button ghost" data-action="open-timeline" data-episode="${escapeHtml(detail.episode)}">时间轴</button>${detail.transcriptPath ? `<button class="button ghost" data-action="open-path" data-path="${escapeHtml(detail.transcriptPath)}">打开转录文本</button>` : ''}</div></div><div class="transcript-layout"><div class="panel transcript-panel"><div class="panel-head"><strong>对白句段 · ${lines.length}</strong><small>${escapeHtml(detail.mood || '情绪待判定')}</small></div><div class="panel-body transcript-scroll" role="region" aria-label="对白句段" tabindex="0"><div class="transcript-list">${linesHtml || '<div class="empty-state">没有转录句段；本集可能没有音轨或尚未开启转录。</div>'}</div></div></div><aside class="transcript-side">${renderPlayers(detail)}<div class="reason-card"><h3>音乐书签</h3><div class="big" id="bookmark-time">${current ? formatSeconds(current.start) : '—'}</div><p id="bookmark-reason">${escapeHtml(segment.selection_reason || '选择一个句段查看选曲原因。')}</p><div class="inspector-row"><span>当前背景音乐</span><b id="bookmark-track">${escapeHtml(String(segment.bgm_file || '').split(/[\\/]/).pop() || '—')}</b></div><div class="inspector-row"><span>当前情绪</span><b id="bookmark-mood">${escapeHtml(musicMoodLabel(segment))}</b></div><button class="button primary bookmark-jump" data-action="jump-to-line">跳到时间轴</button></div><div class="notice"><b>审阅提示</b><br>关键词规则只提供线索，不代表完整剧情理解；请试听对白清晰度、切点和压低效果后再交付。</div></aside></div></section>`;
 }
 
 function renderChrome() {
@@ -490,7 +501,7 @@ function renderChrome() {
   topStart.classList.toggle('primary', !state.running);
   topStart.classList.toggle('warn', state.running);
   topStart.hidden = state.view !== 'desk' && !state.running;
-  topStart.disabled = state.starting || state.checkingLibrary || (!state.running && (state.preflightPending || Boolean(state.data.warning) || preflightChecks().some((check) => !check.ok)));
+  topStart.disabled = state.starting || state.checkingLibrary || (!state.running && state.config.preflightEnabled !== false && (state.preflightPending || Boolean(state.data.warning) || preflightChecks().some((check) => !check.ok)));
   topStart.title = topStart.disabled ? '请完成页面上的开始前检查' : '';
   document.querySelectorAll('.nav-item').forEach((item) => {
     const active = item.dataset.view === state.view;
@@ -537,10 +548,12 @@ function render(preserveScroll = false) {
 }
 
 async function startBatch(runMode = 'all') {
-  if (state.running || state.starting) return;
+  if (state.running || state.starting || state.checkingLibrary) return;
+  state.starting = true;
+  updateLive();
   try {
-    await refresh(true, true);
-    if (state.preflightPending || state.data.warning || preflightChecks().some((check) => !check.ok)) {
+    if (state.config.preflightEnabled !== false) await refresh(true, true);
+    if (state.config.preflightEnabled !== false && (state.preflightPending || state.data.warning || preflightChecks().some((check) => !check.ok))) {
       state.view = 'desk'; render();
       document.querySelector('#preflight-content button')?.focus();
       return showToast('请先修复开始前检查中的失败项', true);
@@ -550,8 +563,6 @@ async function startBatch(runMode = 'all') {
     if (runMode === 'episode' && !current?.videoPath) return showToast('请先选择可访问的视频', true);
     if (runMode === 'episode' && !window.confirm(`重新生成“${current.episode}”？仅替换本程序为该集创建的产物，仍保护同名手工文件；原始视频和音乐不会修改。`)) return;
     if (runMode === 'all' && state.config.overwrite && !window.confirm('已开启允许覆盖：本次队列的同名输出可能被替换。原始素材不会修改，是否继续？')) return;
-    state.starting = true;
-    updateLive();
     rememberPaths();
     const result = await api.startBatch({ ...state.config, runMode, ...(runMode === 'all' ? {} : { overwrite: false }), ...(runMode === 'episode' ? { episodeVideoPath: current.videoPath } : {}) });
     if (result.run && (!state.run || state.run.startedAt < result.run.startedAt)) state.run = result.run;
@@ -627,7 +638,7 @@ function syncReview(time) {
     node.classList.toggle('selected', selected);
     node.setAttribute('aria-pressed', String(selected));
   });
-  const values = { 'bookmark-time': formatSeconds(time), 'bookmark-reason': segment.selection_reason || '当前时间没有音乐片段', 'bookmark-track': String(segment.bgm_file || '').split(/[\\/]/).pop() || '—', 'bookmark-mood': segment.mood || '—', 'playback-time': formatSeconds(time) };
+  const values = { 'bookmark-time': formatSeconds(time), 'bookmark-reason': segment.selection_reason || '当前时间没有音乐片段', 'bookmark-track': String(segment.bgm_file || '').split(/[\\/]/).pop() || '—', 'bookmark-mood': musicMoodLabel(segment), 'playback-time': formatSeconds(time) };
   for (const [id, value] of Object.entries(values)) { const node = document.getElementById(id); if (node) node.textContent = value; }
   document.querySelectorAll('.playhead').forEach((node) => { node.style.left = `${Math.min(100, Math.max(0, time / Math.max(1, detail.duration) * 100))}%`; });
 }
@@ -712,11 +723,13 @@ document.addEventListener('click', async (event) => {
       saveConfig();
       await refresh(true, true);
     } else if (action === 'check-library' || action === 'analyze-library') {
-      const music = state.config.music;
+      if (action === 'analyze-library' && state.config.strictInstrumental === false) return showToast('人声筛选已关闭，开启后可分析');
+      if (state.checkingLibrary || state.running) return;
+      const config = { ...state.config };
       state.checkingLibrary = true;
       state.libraryProgress = null;
       updateLive();
-      try { const library = await api.checkMusicLibrary({ ...state.config, analyzeVocals: action === 'analyze-library' }); if (state.config.music === music) state.library = library; }
+      try { const library = await api.checkMusicLibrary({ ...config, analyzeVocals: action === 'analyze-library' }); if (state.config.music === config.music && state.config.strictInstrumental === config.strictInstrumental) state.library = library; }
       finally { state.checkingLibrary = false; updateLive(); }
     } else if (action === 'stop-library') {
       await api.stopLibraryAnalysis();
@@ -841,9 +854,11 @@ document.addEventListener('change', (event) => {
   state.config[key] = input.type === 'checkbox' ? input.checked : (['duckDb', 'fadeIn', 'fadeOut', 'transitionFadeDuration', 'minTracksPerEpisode', 'maxTracksPerEpisode'].includes(key) ? (input.value === '' ? '' : Number(input.value)) : input.value);
   saveConfig();
   if (key === 'music' || key === 'strictInstrumental') state.library = null;
+  const redraw = key === 'strictInstrumental' || key === 'preflightEnabled';
+  if (redraw) render(true);
   clearTimeout(refreshTimer);
   rememberPaths();
-  refresh(true, true);
+  refresh(true, !redraw);
   if (key === 'scenePriority' && state.view === 'settings') render(true);
   const transitionDuration = document.getElementById('config-transitionFadeDuration');
   if (transitionDuration) transitionDuration.disabled = !state.config.transitionFadeEnabled;
@@ -860,7 +875,8 @@ document.addEventListener('input', (event) => {
   state.config[input.dataset.configKey] = ['duckDb', 'fadeIn', 'fadeOut', 'transitionFadeDuration', 'minTracksPerEpisode', 'maxTracksPerEpisode'].includes(input.dataset.configKey) ? (input.value === '' ? '' : Number(input.value)) : input.value;
   saveConfig();
   if (input.dataset.configKey === 'music') state.library = null;
-  state.preflightPending = true;
+  refreshSequence += 1;
+  state.preflightPending = state.config.preflightEnabled !== false;
   renderChrome();
   clearTimeout(refreshTimer);
   refreshTimer = setTimeout(() => refresh(true, true), 400);
@@ -954,7 +970,10 @@ api.onUpdateEvent((update) => {
       state.run = info.run || null;
       state.logs = info.logs || [];
     }
-    if (state.running && state.run?.config) Object.assign(state.config, state.run.config);
+    if (state.running && state.run?.config) {
+      const { strictInstrumental, preflightEnabled, ...runningConfig } = state.run.config;
+      Object.assign(state.config, runningConfig);
+    }
     try {
       const recent = JSON.parse(localStorage.getItem('bgm-studio-recent-paths') || '{}');
       for (const key of ['videos', 'music', 'output', 'transcripts', 'modelPath']) state.recentPaths[key] = Array.isArray(recent[key]) ? recent[key].filter((value) => typeof value === 'string').slice(0, 5) : [];

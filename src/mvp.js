@@ -10,7 +10,7 @@ const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.mkv', '.webm', '.avi', '.m4v
 const AUDIO_EXTENSIONS = new Set(['.wav', '.mp3', '.m4a', '.aac', '.flac', '.ogg', '.opus']);
 const DEFAULT_MOOD = '默认';
 const STATE_VERSION = 14;
-const PLANNING_VERSION = 'scene-required-with-mood-v4';
+const PLANNING_VERSION = 'local-context-music-v6';
 
 const MOOD_RULES = [
   { mood: '紧张', words: ['危险', '追杀', '逃跑', '快跑', '小心', '冲突', '打架', '绑架', '枪', '杀', '来不及', '怎么办', '救命', '别过来', 'danger', 'chase', 'run away', 'hurry', 'hurry up', 'careful', 'kidnap', 'kidnapped', 'gun', 'kill', 'killed', 'fight', 'fighting', "we're running out of time", 'what do we do', "don't come", "i'm scared", "i'm afraid", 'please help', 'help me', 'get out of here', 'we have to go', "they're coming", "we're trapped"] },
@@ -354,6 +354,7 @@ function findMoodFolder(mood, groups) {
     励志: ['励志', '成长', '希望'],
     伤感: ['伤感', '悲伤', '悲情', '失落', '离别'],
     温情: ['温情', '治愈', '平静', '陪伴', '温柔'],
+    平静: ['平静', '默认', 'default', '治愈'],
     默认: ['默认', 'default', '平静', '治愈'],
   };
   const candidates = [mood, ...(aliases[mood] || [])].map(normalizeMood).filter(Boolean);
@@ -368,45 +369,97 @@ const NEGATION_PATTERN = /(?:(?:不|没|未|别|无|不是|从不|从没)(?:再|
 const WEAK_ENGLISH_CUES = new Set(['mom', 'mother', 'dad', 'father', 'family', 'wife', 'husband', 'love', 'loves', 'wedding', 'marry', 'married', 'happy', 'sad', 'sorry', 'thank', 'thanks', 'care', 'home', 'careful', 'danger', 'fight', 'fighting', 'monitor', 'follow', 'finally', 'hope', 'support', '爱', '喜欢', '婚礼', '妈妈', '爸爸', '家人', '小心']);
 MOOD_RULES.find((rule) => rule.mood === '浪漫').words.push('我爱你', '我们一直相爱', '我们结婚吧', 'i love my husband', 'i love my wife');
 MOOD_RULES.find((rule) => rule.mood === '愤怒').words.push('back off', 'made enough of a scene', 'take her side', 'take his side', "don't even trust me", 'stop going after', 'are you tracking me', 'stop making a scene', 'force an answer', 'spread lies');
-WEAK_ENGLISH_CUES.add("i'm scared");
-WEAK_ENGLISH_CUES.add("i'm afraid");
-WEAK_ENGLISH_CUES.add('leave');
-WEAK_ENGLISH_CUES.add('left');
+for (const cue of ["i'm afraid", 'leave', 'left', 'cry', 'crying', 'tears', 'fun', 'grandmother', 'grandpa', 'dare', 'get out', 'apologize', 'apology', 'help me']) WEAK_ENGLISH_CUES.add(cue);
+
+// shortcut: dialogue and scene continuity cannot read acting or irony; use multimodal semantics when those errors dominate.
+const STRONG_MOOD_CUES = {
+  紧张: [/\b(?:call (?:911|the police|an ambulance)|(?:i'm|i am|we're|we are) (?:really |so |very )?scared|(?:i'm|i am) afraid(?!\s+(?:so|not|that|to)\b)|(?:we're|we are) trapped|help me(?=[!.?]|$)|what if (?:they|he|she) (?:take|takes|hurt|hurts|kill|kills)|who put you up to this)\b/g, /救命|快跑|别过来|我(?:真的|很|好)?害怕/g],
+  愤怒: [/\b(?:how dare you|you have no right|(?:i've|i have) had enough|(?:don't|do not) (?:you )?dare|you (?:dared|dare) to|one more (?:step|word)|get out of my way)\b/g,
+    /\b(?:forc(?:e|es|ed|ing)|bull(?:y|ies|ied|ying)|threaten(?:s|ed|ing)?|humiliat(?:e|es|ed|ing)|instigat(?:e|es|ed|ing))\s+(?:me|you|him|her|us|them)\b/g,
+    /\b(?:(?:you (?:stole|took)|stealing) (?:my|our|the) (?:kids|babies|children)|(?:won't|will not|don't|do not) (?:let you )?(?:hurt|touch|harm) (?:me|you|him|her|them|us|(?:my|our|the) (?:kids|babies|children|girl|boy)))\b/g,
+    /\b(?:without (?:my|your|her|his|their) (?:consent|permission)|who said you could)\b/g,
+    /别逼我|你竟敢|不准(?:伤害|碰)|(?:别|不要)(?:伤害|碰)(?:我|她|他|孩子)|逼迫|威胁|欺负/g],
+  悬疑: [/\b(?:what are you hiding|what's to hide|what is there to hide|trying to pull|tell me the truth|who did this|something is wrong|something's wrong)\b/g, /隐瞒真相|到底是谁|事情不对劲/g],
+  爽感: [/\b(?:we won|i won|we did it|you lose|in your face|you got what you deserved)\b/g, /我们赢了|我赢了|终于赢了|大仇得报/g],
+  欢快: [/\b(?:(?:i'm|i am|we're|we are) (?:so |really |very )?happy|great news|good news|can't stop laughing)\b/g, /太好了|好开心|开心极了/g],
+  浪漫: [/\b(?:i love you|i want to be with you|you mean everything to me|will you marry me)\b/g, /我爱你|我们一直相爱|我们结婚吧/g],
+  励志: [/\b(?:i won't give up|we won't give up|believe in yourself|you can do it)\b/g, /不能放弃|相信自己|我不会放弃/g],
+  伤感: [/\b(?:(?:i'm|i am) (?:heartbroken|devastated)|i miss you|i lost you|you left me|why (?:the |your )?tears|never see you again)\b/g, /心碎了|再也见不到|我好想你/g],
+  温情: [/\b(?:(?:mommy|daddy)'s here|(?:i'm|i am) here(?: for you)?|you are not alone|(?:don't|do not) be (?:afraid|scared)|i'm proud of you)\b/g, /有我在|我陪你|别害怕|别怕|辛苦了/g],
+};
+
+const CONTEXT_MOOD_CUES = {
+  紧张: [
+    /\b(?:contractions? (?:are |is )?(?:too )?frequent|(?:premature|patient|babies|baby).{0,35}in distress|(?:deliver|operate) immediately|(?:get|bring) (?:a |the )?(?:gurney|stretcher)|(?:must|please|have to) save (?:her|him|them|the baby)|(?:my |her |his )?stomach hurts(?: so much)?|(?:i'm|i am) begging you)\b/g,
+    /\b(?:what if .{0,25}(?:take|hurt|kill)|(?:can|could|will) .{0,20}take (?:the |my |our )?(?:kids|children)|(?:get|call) the doctor right away)\b/g,
+    /\b(?:it hurts[.!]|my stomach.{0,25}(?:babies|children|hurt)|(?:i |we )?(?:must|have to|need to) save (?:her|him|them)|(?:kids|babies|children) (?:are |is )?not safe)\b/g,
+    /宫缩|胎儿.{0,6}危险|立即(?:手术|分娩)|救救(?:我|他|她|孩子)|快叫医生|疼得厉害/g,
+  ],
+  愤怒: [
+    /\b(?:i warned you|(?:has|have|had) the nerve|(?:can't|cannot|won't) let (?:them|her|him|you) spread lies|spread(?:ing)? lies|false (?:content|accusations)|(?:you|he|she|they) .{0,20}(?:sent someone to steal|tried to take|took|stole|dragged) (?:my |our |the |two of the )?(?:kids|children|babies|newborns)|take (?:my|our) children)\b/g,
+    /\b(?:harass(?:ing)? (?:me|you|us|her|him)|settle this score|(?:you|she|he) (?:still )?(?:don't|doesn't|didn't) (?:get it|respect)|you (?:were|are) wrong|what gives (?:you|her|him|them) the right|(?:you |she |he )?(?:never agreed|already refused)|cease and desist|without consent|force (?:your|my|her|his) hand)\b/g,
+    /\b(?:you (?:don't|do not) get to (?:make|decide)|stay (?:away|out of it)|turn against|taking her side|what (?:the hell|nonsense)|you (?:only|just) want (?:the |my |our )?(?:boys|money)|(?:you |she |he )?(?:won't|will not|can't|cannot) (?:let .{0,10})?(?:hurt|touch|take) (?:me|you|him|her|them|us|(?:my|our|the) (?:kids|babies|children))|(?:i |we )?(?:can't|cannot|won't|will not) (?:help you |let .{0,15})?(?:hurt|take) (?:me|you|him|her|them|us|(?:my|our|the) (?:kids|babies|children))|forced .{0,20}(?:out|divorce)|don't disappoint me again)\b/g,
+    /你凭什么|你没资格|没经过.{0,5}同意|我警告你|造谣|抢走.{0,5}孩子|不许再来|别来骚扰|你(?:根本|还是)?不明白|你(?:只|就)要.{0,3}男孩/g,
+  ],
+  悬疑: [
+    /\b(?:paternity test|birth certificates?|(?:test|dna) results|(?:get|take) a sample|alleged father|(?:who|what) sent it|what's (?:his|her|their) (?:deal|plan)|what kind of (?:note|gift)|(?:open|unbox) it|find out in public|special note|must open it themselves|(?:children|kids) (?:aren't|are not) here yet|(?:where are|where're) (?:the|my|our) (?:children|kids)|(?:don't|do not) tell .{0,30}(?:yet|family))\b/g,
+    /亲子鉴定|检测结果|出生证明|幕后|到底怎么回事|打开看看|孩子.{0,4}还没来|暂时别告诉/g,
+  ],
+  爽感: [/\b(?:call (?:him|her|them) out publicly|(?:i'll|i will) respond in public|make (?:him|her|them) pay|you'll pay for this)\b/g, /当众揭穿|公开回应|让你付出代价/g],
+  欢快: [/\b(?:we're|we are|i'm|i am) going to be (?:so |very |really )?happy\b/g, /双喜临门|开开心心/g],
+  伤感: [
+    /\b(?:(?:we're|we are|i'm|i am) divorced|(?:you|he|she) used to comfort me|nothing (?:more )?to say|treasure things.{0,12}not people|(?:i'm|i am|so) miserable|been (?:through|treated) so (?:much|unfairly)|(?:gave|give) birth.{0,20}(?:by yourself|alone)|(?:he|she) always promised.{0,25}(?:here|with me)|(?:he's|she's|he is|she is) not here|(?:i'm|i am) done waiting)\b/g,
+    /\b(?:doesn't erase the past|(?:you |he |she )?still blame me|past blaming|save the rest of your words for|carry everything on your own)\b/g,
+    /我们离婚了|再也没什么好说|你以前.{0,4}安慰|我好委屈|受了.{0,4}委屈|独自.{0,5}生下|答应过.{0,5}陪我|我不等了/g,
+  ],
+  温情: [
+    /\b(?:in (?:very )?good hands|(?:babies|baby|children|kids|triplets) (?:are |is |all |so |very |doing )*(?:stable|healthy|safe|wonderfully)|(?:they're|they are|all) (?:safe|stable)|strong heartbeats|(?:grandma|grandpa) loves you|(?:hold|holding) my grand(?:son|daughter)|safe and sound|that's (?:all )?behind you now|feeling any better|(?:don't|do not) carry it all by yourself|(?:i |we )?(?:have|got) (?:them|you).{0,15}that's enough)\b/g,
+    /孩子.{0,6}(?:平安|健康|稳定)|心跳很好|奶奶爱你|爷爷爱你|都过去了|别一个人扛|有你们就够了/g,
+  ],
+};
+for (const [mood, patterns] of Object.entries(CONTEXT_MOOD_CUES)) STRONG_MOOD_CUES[mood].push(...patterns);
 
 function moodWordHits(text, rule) {
   const searchableText = String(text || '').toLowerCase().replace(/[’‘]/g, "'");
   return rule.words.filter((word) => {
     const keyword = word.toLowerCase();
     const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/ +/g, '\\s+');
-    const pattern = new RegExp(/^[a-z]/.test(keyword) ? `\\b${escaped}\\b` : escaped, 'g');
+    const pattern = new RegExp(/^[a-z]/.test(keyword) ? `(?<![a-z'])${escaped}(?![a-z'])` : escaped, 'g');
     return [...searchableText.matchAll(pattern)].some((match) => {
       const prefix = searchableText.slice(Math.max(0, match.index - 48), match.index).split(/[.,!?;。！？；，\n]/).at(-1);
+      if (rule.mood === '悬疑' && /(?:when|if)\s*$/.test(prefix) && /something(?:'s| is) wrong/.test(match[0])) return false;
+      if (rule.mood === '温情' && /(?:as long as|if|hope|wish|whether|want.{0,18}to be)\s*(?:the\s+)?$/.test(prefix) && /safe|stable|healthy/.test(match[0])) return false;
       return !NEGATION_PATTERN.test(prefix);
     });
   });
 }
 
-function moodCandidates(text, groups) {
+function moodCandidates(text) {
+  const normalized = String(text || '').toLowerCase().replace(/[’‘]/g, "'");
   return MOOD_RULES.map((rule) => {
-    const hits = moodWordHits(text, rule);
-    const usableHits = hits.filter((hit) => !WEAK_ENGLISH_CUES.has(hit));
+    const phrases = moodWordHits(normalized, { mood: rule.mood, words: [...new Set((STRONG_MOOD_CUES[rule.mood] || []).flatMap((pattern) => [...normalized.matchAll(pattern)].map((match) => match[0])))] });
+    const usableHits = [...new Set([...moodWordHits(normalized, rule).filter((hit) => !WEAK_ENGLISH_CUES.has(hit)), ...phrases])];
     const phraseHits = usableHits.filter((hit) => hit.length >= 3 || hit.includes(' ')).length;
-    return { mood: findMoodFolder(rule.mood, groups), hits: usableHits, score: usableHits.length + phraseHits * 0.25 };
-  }).filter((result) => result.mood && result.score > 0).sort((a, b) => b.score - a.score || b.hits.length - a.hits.length);
+    return { mood: rule.mood, hits: usableHits, strong: phrases.length > 0, score: usableHits.length + phraseHits * 0.25 + phrases.length * 2 };
+  }).filter((result) => result.score > 0).sort((a, b) => b.score - a.score || b.hits.length - a.hits.length);
 }
 
 function inferMood(transcript, groups, override) {
   if (override) {
     const folder = findMoodFolder(override, groups);
     if (!folder) throw new Error(`找不到指定情绪目录“${override}”，已有目录: ${[...groups.keys()].join(', ')}`);
-    return { mood: folder, reason: `人工覆盖: ${override}` };
+    return { mood: folder, detectedMood: override, reason: `人工覆盖: ${override}` };
   }
 
   const text = (transcript?.segments || []).map((segment) => segment.text).join(' ');
-  const hits = moodCandidates(text, groups);
-  if (hits.length) return { mood: hits[0].mood, reason: `对白情绪线索: ${hits[0].hits.join('、')}` };
+  const hits = moodCandidates(text);
+  if (hits.length) {
+    const target = findMoodFolder(hits[0].mood, groups);
+    const mood = target || findMoodFolder(DEFAULT_MOOD, groups);
+    return { mood, detectedMood: hits[0].mood, review: !target, reason: `对白情绪线索: ${hits[0].hits.join('、')}${target ? '' : `；识别为${hits[0].mood}，目标目录无可用曲目，${mood ? '回退到' + mood : '留白'}`}` };
+  }
   const fallback = findMoodFolder(DEFAULT_MOOD, groups);
-  return { mood: fallback, review: true, reason: fallback ? '情绪证据不足，使用中性回退，待试听' : '情绪证据不足且无中性曲目，保留留白，待检查' };
+  return { mood: fallback, detectedMood: '平静', moodSource: 'neutral-bed', review: true, reason: '配乐建议: 平静；对白未提供明确情绪线索，采用低强度叙事铺底（低置信度），待试听' };
 }
 
 function chooseTrack(groups, mood, trackUses, episodeTracks, metadata = new Map(), changeTrack = false, previousTrack = null) {
@@ -426,9 +479,9 @@ function chooseTrack(groups, mood, trackUses, episodeTracks, metadata = new Map(
 
 const DEFAULT_TRANSITION_FADE_SECONDS = 1;
 
-function classifyMoodText(text, groups) {
-  const result = moodCandidates(text, groups)[0];
-  if (result) return { mood: result.mood, hits: result.hits };
+function classifyMoodText(text) {
+  const result = moodCandidates(text)[0];
+  if (result) return { mood: result.mood, hits: result.hits, strong: result.strong, score: result.score };
   return { mood: null, hits: [] };
 }
 
@@ -463,41 +516,31 @@ function pickSectionMood(moodRuns, start, end, fallbackMood) {
 const MIN_MOOD_RUN_SECONDS = 3;
 const MIN_MOOD_RUN_HITS = 2;
 
-function collectMoodRuns(classified) {
+function collectMoodRuns(classified, sceneCuts = []) {
   const runs = [];
   for (const item of classified.filter((segment) => segment.mood).sort((a, b) => a.start - b.start)) {
     const current = runs.at(-1);
-    if (current?.mood === item.mood && item.start - current.end <= 12) {
+    if (current?.mood === item.mood && item.start - current.end <= 12 && !sceneCuts.some((cut) => cut.time >= current.end && cut.time <= item.start)) {
       current.end = Math.max(current.end, item.end);
       current.hitCount += item.hits.length;
       current.segmentCount += 1;
       current.evidenceSeconds += Math.max(0, item.end - item.start);
+      current.strong ||= item.strong;
     } else {
-      runs.push({ mood: item.mood, start: item.start, end: item.end, hitCount: item.hits.length, segmentCount: 1, evidenceSeconds: item.end - item.start });
+      runs.push({ mood: item.mood, start: item.start, end: item.end, hitCount: item.hits.length, segmentCount: 1, evidenceSeconds: item.end - item.start, strong: item.strong });
     }
   }
 
-  const stableRuns = runs.filter((run) => run.evidenceSeconds >= MIN_MOOD_RUN_SECONDS && (run.segmentCount >= 2 || run.hitCount >= MIN_MOOD_RUN_HITS || run.evidenceSeconds >= 6));
-  return stableRuns.reduce((merged, run) => {
-    const previous = merged.at(-1);
-    if (previous?.mood === run.mood) {
-      previous.end = Math.max(previous.end, run.end);
-      previous.hitCount += run.hitCount;
-      previous.segmentCount += run.segmentCount;
-    } else {
-      merged.push({ ...run });
-    }
-    return merged;
-  }, []);
+  return runs.filter((run) => run.strong || run.evidenceSeconds >= MIN_MOOD_RUN_SECONDS && (run.segmentCount >= 2 || run.hitCount >= MIN_MOOD_RUN_HITS || run.evidenceSeconds >= 6));
 }
 
-function sectionReason(classified, start, end, options) {
-  const words = [...new Set(classified
-    .filter((item) => Math.min(end, item.end) > Math.max(start, item.start))
-    .flatMap((item) => item.hits))].slice(0, 4);
-  if (words.length) return '片段对白关键词: ' + words.join('、');
+function sectionReason(classified, start, end, options, detectedMood, moodSource, contextHits = []) {
   if (options.mood) return '人工覆盖: ' + options.mood;
-  return '未检测到明确情绪关键词，使用默认情绪';
+  if (moodSource === 'neutral-bed') return '配乐建议: 平静；本段缺少明确情绪线索，采用低强度叙事铺底（低置信度），待试听';
+  const words = [...new Set(classified
+    .filter((item) => item.mood === detectedMood && Math.min(end, item.end) > Math.max(start, item.start))
+    .flatMap((item) => item.hits).concat(contextHits))].slice(0, 4);
+  return `配乐建议: ${detectedMood}；${moodSource === 'scene-context' ? '同场景对白上下文（中置信度）' : '本段对白线索'}${words.length ? ': ' + words.join('、') : '，待复核'}`;
 }
 
 function buildMusicPlan({ duration, transcript, groups, options, trackUses, sceneCuts = [] }) {
@@ -505,16 +548,26 @@ function buildMusicPlan({ duration, transcript, groups, options, trackUses, scen
   const requestedSegmentLimit = Number(options.maxTracksPerEpisode ?? 3);
   const configuredSegmentLimit = Number.isSafeInteger(requestedSegmentLimit) && requestedSegmentLimit >= 0 ? requestedSegmentLimit : 3;
   const requestedMinimum = Number(options.minTracksPerEpisode ?? 1);
-  if (!Number.isSafeInteger(requestedMinimum) || requestedMinimum < 1 || !scenePriority && configuredSegmentLimit && requestedMinimum > configuredSegmentLimit) throw new Error('每集 BGM 下限必须为正整数，且不能高于生效的上限');
-  const maxSegments = scenePriority ? Infinity : configuredSegmentLimit || Infinity;
+  if (!Number.isSafeInteger(requestedMinimum) || requestedMinimum < 1 || configuredSegmentLimit && requestedMinimum > configuredSegmentLimit) throw new Error('每集 BGM 下限必须为正整数，且不能高于生效的上限');
+  const maxSegments = configuredSegmentLimit || Infinity;
   let minimumTarget = Math.min(requestedMinimum, Math.max(1, Math.floor(duration / 6)));
   const episodeTracks = new Set();
   const baseMood = inferMood(transcript, groups, options.mood);
   const rawSegments = transcript?.segments || [];
+  const strongCuts = sceneCuts.filter((cut) => cut.score >= 30 || cut.kind === 'black');
   const classified = rawSegments.flatMap(splitTranscriptSegment).map((segment) => options.mood
-    ? { ...segment, mood: baseMood.mood, hits: [] }
-    : { ...segment, ...classifyMoodText(segment.text, groups) });
-  const moodRuns = collectMoodRuns(classified);
+    ? { ...segment, mood: baseMood.detectedMood, hits: [] }
+    : { ...segment, ...classifyMoodText(segment.text) });
+  // Rejoin ASR fragments only when one cue spans adjacent clauses, without borrowing a neighbour's complete statement.
+  for (let index = 0; !options.mood && index < classified.length - 1; index += 1) {
+    const first = classified[index];
+    const second = classified[index + 1];
+    if (second.start - first.end > 1.5 || second.end - first.start > 12 || strongCuts.some(cut => cut.time > first.start && cut.time <= second.start)) continue;
+    const joined = moodCandidates(first.text + ' ' + second.text).find(candidate => candidate.strong && candidate.hits.some(hit =>
+      !moodCandidates(first.text).some(local => local.hits.includes(hit)) && !moodCandidates(second.text).some(local => local.hits.includes(hit))));
+    if (joined) for (const item of [first, second]) if (!item.mood) Object.assign(item, { mood: joined.mood, hits: joined.hits, strong: true, score: joined.score });
+  }
+  const moodRuns = collectMoodRuns(classified, strongCuts);
   const candidates = [];
   for (let index = 1; index < moodRuns.length; index += 1) {
     const previous = moodRuns[index - 1];
@@ -530,8 +583,20 @@ function buildMusicPlan({ duration, transcript, groups, options, trackUses, scen
       window: [gapStart, gapEnd], sceneTime: scene?.time,
       nextMood: current.mood,
       reason: scene ? '持续对白情绪转折与镜头候选重合' : pause ? '持续对白情绪转折，落在对白停顿' : '持续对白情绪转折，落在句段边界',
-      score: previous.hitCount + current.hitCount + Math.min(current.end - current.start, 30) / 30,
+      score: current.hitCount * 2 + Math.min(current.evidenceSeconds, 12) / 3 + Number(Boolean(current.strong)),
     });
+  }
+  for (let index = 0; index < moodRuns.length; index += 1) {
+    const run = moodRuns[index];
+    const sceneStart = Math.max(0, ...strongCuts.filter(cut => cut.time <= run.start).map(cut => cut.time));
+    const leadDialogue = rawSegments.some(segment => segment.start < run.start && segment.end <= run.start && segment.end >= Math.max(sceneStart, run.start - 12));
+    if (run.strong && !leadDialogue && run.start > (moodRuns[index - 1]?.end || 0) + 12) candidates.push({ boundary: run.start - 0.2, nextMood: run.mood,
+      reason: '明确情绪证据与前段间隔较长，按局部对白进入，待试听', score: run.hitCount });
+    const expiry = run.end + 12;
+    if (run.strong && run.evidenceSeconds < 3 && expiry < duration && (!moodRuns[index + 1] || moodRuns[index + 1].start > expiry) &&
+      !rawSegments.some(segment => segment.start >= run.end && segment.start < expiry)) {
+      candidates.push({ boundary: expiry, neutralReset: true, reason: '独立短句后长时间无后续对白，转为低强度叙事铺底，待试听', score: 0.25 });
+    }
   }
   // shortcut: visual scores cannot understand locations; replace with scene semantics when false cuts matter.
   if (scenePriority) for (const cut of sceneCuts) {
@@ -543,12 +608,12 @@ function buildMusicPlan({ duration, transcript, groups, options, trackUses, scen
     const pauseStart = rawSegments[index - 1].end;
     const pauseEnd = rawSegments[index].start;
     if (pauseEnd - pauseStart < 2.5) continue;
-    const scene = sceneCuts.filter((cut) => cut.time >= pauseStart && cut.time <= pauseEnd + 0.2)
+    const scene = sceneCuts.filter(cut => cut.time >= pauseStart && cut.time <= pauseEnd + 0.2)
       .sort((a, b) => Math.abs(a.time - pauseEnd) - Math.abs(b.time - pauseEnd))[0];
-    if (!scene || !moodRuns.some((run) => run.end <= pauseEnd && pauseEnd - run.end <= 12)) continue;
-    if (moodRuns.some((run) => run.start < pauseEnd && run.end > pauseEnd)) continue;
-    candidates.push({ boundary: scene.time, window: [pauseStart, pauseEnd], sceneTime: scene.time,
-      neutralReset: true, reason: '镜头变化与较长对白停顿重合，结束前段情绪并保守回退，待试听', score: 2 });
+    const preceding = moodRuns.find(run => run.hitCount >= 2 && run.end <= pauseEnd && pauseEnd - run.end <= 12);
+    if (!scene || !preceding || moodRuns.some(run => run.start < pauseEnd && run.end > pauseEnd)) continue;
+    candidates.push({ boundary: scene.time, window: [pauseStart, pauseEnd], sceneTime: scene.time, neutralReset: true,
+      reason: '持续情绪后的镜头变化与较长停顿重合，重新判断本场景配乐方向，待试听', score: 2 });
   }
   const minimumSegmentDuration = Math.min(12, duration);
   const boundaries = [];
@@ -560,7 +625,7 @@ function buildMusicPlan({ duration, transcript, groups, options, trackUses, scen
     return split.slice(1).reduce((sum, end, i) => sum + Math.max(1, Math.floor((end - split[i] + 0.000001) / 6)), 0) >= minimumTarget;
   };
   if (scenePriority) {
-    for (const candidate of candidates.sort((a, b) => a.boundary - b.boundary)) {
+    for (const candidate of candidates.filter((item) => item.sceneChange).sort((a, b) => a.boundary - b.boundary)) {
       if (candidate.boundary <= 0 || candidate.boundary >= duration) continue;
       const existing = boundaries.find((item) => Math.abs(item.boundary - candidate.boundary) < 0.25);
       if (existing) {
@@ -570,8 +635,11 @@ function buildMusicPlan({ duration, transcript, groups, options, trackUses, scen
         existing.reason = [...new Set([existing.reason, candidate.reason])].join('；');
       } else boundaries.push({ ...candidate, required: true, changeTrack: true });
     }
-  } else for (const candidate of candidates.sort((a, b) => b.score - a.score || a.boundary - b.boundary)) {
-    if (boundaries.length >= maxSegments - 1) break;
+  }
+  for (const candidate of candidates.filter((item) => !item.sceneChange).sort((a, b) => b.score - a.score || a.boundary - b.boundary)) {
+    const existing = boundaries.find((item) => Math.abs(item.boundary - candidate.boundary) < 0.25);
+    if (existing) { existing.nextMood ||= candidate.nextMood; existing.reason += '；' + candidate.reason; continue; }
+    if (boundaries.length >= maxSegments - 1) continue;
     if (canSplit(candidate.boundary, minimumSegmentDuration)) boundaries.push(candidate);
   }
   const requiredPoints = [0, ...boundaries.map((item) => item.boundary), duration].sort((a, b) => a - b);
@@ -602,32 +670,47 @@ function buildMusicPlan({ duration, transcript, groups, options, trackUses, scen
   for (const boundary of boundaries.slice(0, minimumTarget - 1)) boundary.changeTrack = true;
   const points = [0, ...boundaries.map((item) => item.boundary), duration];
   const ranges = points.slice(1).map((end, index) => [points[index], end]);
-  const fallbackMood = options.mood ? baseMood.mood : findMoodFolder(DEFAULT_MOOD, groups);
   const sections = [];
   for (const [start, end] of ranges) {
     const previous = sections.at(-1);
     const transition = boundaries.find((item) => Math.abs(item.boundary - start) < 0.001);
-    const reset = transition?.neutralReset || transition?.sceneChange;
-    const mood = scenePriority && transition?.nextMood || pickSectionMood(moodRuns, start, end, reset ? fallbackMood : previous?.mood || fallbackMood);
+    const local = classified.filter(item => Math.min(item.end, end) > Math.max(item.start, start));
+    const sceneStart = Math.max(0, ...strongCuts.filter(cut => cut.time <= start).map(cut => cut.time), ...boundaries.filter(item => item.neutralReset && item.boundary <= start).map(item => item.boundary));
+    const sceneEnd = Math.min(duration, ...strongCuts.filter(cut => cut.time > start).map(cut => cut.time), ...boundaries.filter(item => item.neutralReset && item.boundary > start).map(item => item.boundary));
+    const contextual = classified.filter(item => item.end > sceneStart && item.start < sceneEnd && item.end > start - 24 && item.start < start + 24);
+    const context = moodCandidates(contextual.map(item => item.text).join(' '))[0];
+    const localMood = pickSectionMood(moodRuns, start, end, null);
+    const joined = moodCandidates(local.map(item => item.text).join(' '))[0];
+    const contextualMood = contextual.length > 1 ? context?.mood : null;
+    const transitionRun = moodRuns.find(run => run.mood === transition?.nextMood && run.start >= start - 0.5 && run.start < start + 2);
+    const briefTransition = transitionRun && transitionRun.evidenceSeconds < 3 && transitionRun.hitCount < 2;
+    const localDominates = !transition?.nextMood || localMood === transition.nextMood || briefTransition && moodRuns.some(run => run.mood === localMood && run.hitCount >= 2 && Math.min(run.end, end) - Math.max(run.start, start) >= 3);
+    const mood = options.mood ? baseMood.detectedMood : (localDominates ? localMood : null) || transition?.nextMood || (joined?.strong ? joined.mood : null) || contextualMood || '平静';
+    const moodSource = options.mood ? 'manual' : localMood || joined?.strong && joined.mood === mood ? 'dialogue' : contextualMood === mood ? 'scene-context' : 'neutral-bed';
+    const contextHits = moodSource === 'scene-context' ? context.hits : joined?.mood === mood ? joined.hits : [];
     if (previous && previous.mood === mood && !transition?.changeTrack) { previous.end = end; continue; }
-    sections.push({ start, end, mood, transition });
+    sections.push({ start, end, mood, moodSource, contextHits, transition });
   }
   const segments = [];
   for (const section of sections) {
-    const { start, end, mood, transition } = section;
+    const { start, end, mood: detectedMood, moodSource, contextHits, transition } = section;
+    const targetMood = findMoodFolder(detectedMood, groups);
+    const mood = targetMood || findMoodFolder(DEFAULT_MOOD, groups);
     const previous = segments.at(-1);
     const track = chooseTrack(groups, mood, trackUses, episodeTracks, options.trackMetadata, transition?.changeTrack || episodeTracks.size < requestedMinimum, transition?.required ? previous?.track : null);
     if (transition?.required && (!track || track === previous?.track)) throw new Error(`${formatNumber(start)} 秒处必须换曲，但没有另一首匹配情绪或兼容中性的合格曲目；请补充或确认曲目后重试。`);
     const metadata = options.trackMetadata?.get(track);
+    const musicMood = track ? [...groups].find(([, tracks]) => tracks.includes(track))?.[0] : null;
     const compatibleFallback = track && !(groups.get(mood) || []).includes(track);
-    const evidence = moodRuns.filter((run) => Math.min(run.end, end) > Math.max(run.start, start));
-    const review = Boolean(transition?.changeTrack) || !evidence.length || end - Math.max(...evidence.map((run) => run.end)) > 12 || compatibleFallback || !track;
+    const evidence = moodRuns.filter((run) => run.mood === detectedMood && Math.min(run.end, end) > Math.max(run.start, start));
+    const review = Boolean(transition?.changeTrack) || !targetMood || !evidence.length || end - Math.max(...evidence.map((run) => run.end)) > 12 || compatibleFallback || !track;
     const reason = [start > 0 ? boundaries.find((item) => Math.abs(item.boundary - start) < 0.001)?.reason : '',
-      sectionReason(classified, start, end, options), compatibleFallback ? '目标情绪曲目不足，使用兼容中性曲目' : '',
-      !track ? '无匹配的纯音乐，留白待检查' : review ? '规则证据不足，保守沿用或中性回退，待试听' : ''].filter(Boolean).join('；');
-    if (previous && previous.track === track) { previous.end = end; previous.reason += '；后续相近需求继续原曲'; previous.review ||= review; continue; }
+      sectionReason(classified, start, end, options, detectedMood, moodSource, contextHits), detectedMood && !targetMood ? `建议为${detectedMood}，目标目录无可用曲目，${mood ? '回退到' + mood : '留白'}` : '',
+      compatibleFallback ? '目标情绪曲目不足，使用兼容中性曲目' : '',
+      !track ? '无匹配音乐，留白待检查' : review ? '自动配乐建议与切点待试听复核' : ''].filter(Boolean).join('；');
+    if (previous && previous.track === track && previous.detectedMood === detectedMood) { previous.end = end; previous.reason += '；后续相近需求继续原曲'; previous.review ||= review; continue; }
     if (track) { episodeTracks.add(track); trackUses.set(track, (trackUses.get(track) || 0) + 1); }
-    segments.push({ start, end, mood: mood || '中性留白', track, reason, review,
+    segments.push({ start, end, mood: musicMood || '中性留白', detectedMood, moodSource, moodConfidence: moodSource === 'neutral-bed' ? 'low' : moodSource === 'scene-context' ? 'medium' : moodSource === 'manual' ? 'manual' : 'high', moodFallback: !targetMood || compatibleFallback, track, reason, review,
       cueIn: metadata?.cueIn || 0, intensity: metadata?.intensity || null,
       instrumentalStatus: metadata?.status || (track ? 'unknown' : 'silence'),
       vocalEvidence: metadata?.analysis?.intervals || [],
@@ -641,8 +724,10 @@ function buildMusicPlan({ duration, transcript, groups, options, trackUses, scen
   });
   if (sceneCandidates.some((cut) => cut.required && !cut.used)) throw new Error('检测到转场却未能更换曲目，请检查转场计划后重试');
   const actualTracks = new Set(segments.map((segment) => segment.track).filter(Boolean)).size;
-  const trackCount = { minimum: requestedMinimum, actual: actualTracks, segments: segments.length, met: actualTracks >= requestedMinimum };
+  const trackCount = { minimum: requestedMinimum, maximum: configuredSegmentLimit, actual: actualTracks, segments: segments.length, met: actualTracks >= requestedMinimum,
+    exceededBy: configuredSegmentLimit ? Math.max(0, segments.length - configuredSegmentLimit) : 0 };
   trackCount.warning = trackCount.met ? '' : `未达到每集至少 ${requestedMinimum} 首：实际 ${actualTracks} 首；${minimumTarget < requestedMinimum ? '有效配乐时长不足或受必换点分段限制，补足片段至少保留 6 秒' : '当前情绪及兼容中性曲目不足，不使用不匹配或未通过筛选的曲目补数'}。`;
+  if (trackCount.exceededBy) trackCount.warning += `转场必换优先：设置上限 ${configuredSegmentLimit} 段，实际 ${segments.length} 段，超出 ${trackCount.exceededBy} 段。`;
   return { baseMood, segments, sceneCandidates, trackCount, planningVersion: PLANNING_VERSION };
 }
 
@@ -766,7 +851,7 @@ function csvEscape(value) {
 
 function timelineCsv({ episode, segments, options, intervals, freezeTailSeconds, trackCount }) {
   const crossfade = segments.length > 1 && options.transitionFadeEnabled !== false ? Math.min(transitionFadeSeconds(options), ...segments.map((segment) => (segment.end - segment.start) / 2)) : 0;
-  const headers = ['episode', 'segment', 'start_sec', 'end_sec', 'bgm_file', 'mood', 'selection_reason', 'fade_in_sec', 'fade_out_sec', 'duck_db', 'duck_segments', 'freeze_tail', 'freeze_tail_sec', 'analysis_version', 'instrumental_status', 'cue_in_sec', 'intensity', 'needs_review', 'timing_source', 'transition_evidence', 'duck_attack_sec', 'duck_release_sec', 'music_loudness_lufs', 'vocal_evidence', 'scene_priority', 'minimum_tracks', 'actual_tracks', 'minimum_met'];
+  const headers = ['episode', 'segment', 'start_sec', 'end_sec', 'bgm_file', 'mood', 'selection_reason', 'fade_in_sec', 'fade_out_sec', 'duck_db', 'duck_segments', 'freeze_tail', 'freeze_tail_sec', 'analysis_version', 'instrumental_status', 'cue_in_sec', 'intensity', 'needs_review', 'timing_source', 'transition_evidence', 'duck_attack_sec', 'duck_release_sec', 'music_loudness_lufs', 'vocal_evidence', 'scene_priority', 'minimum_tracks', 'actual_tracks', 'minimum_met', 'detected_mood', 'mood_fallback', 'maximum_segments', 'exceeded_by', 'track_count_warning', 'mood_source', 'mood_confidence'];
   const rows = segments.map((segment, index) => [
     episode,
     index + 1,
@@ -799,6 +884,13 @@ function timelineCsv({ episode, segments, options, intervals, freezeTailSeconds,
     trackCount.minimum,
     trackCount.actual,
     trackCount.met,
+    segment.detectedMood || '',
+    segment.moodFallback,
+    trackCount.maximum,
+    trackCount.exceededBy,
+    trackCount.warning,
+    segment.moodSource,
+    segment.moodConfidence,
   ]);
   return [headers, ...rows].map((row) => row.map(csvEscape).join(',')).join('\n') + '\n';
 }
@@ -1084,7 +1176,7 @@ async function renderEpisode({ videoPath, outputDir, groups, state, options, cat
     }
 
     for (const segment of musicPlan.segments) if (segment.track) state.trackUses[segment.track] = (state.trackUses[segment.track] || 0) + 1;
-    const moods = musicPlan.segments.map((segment) => segment.mood);
+    const moods = musicPlan.segments.map((segment) => `${segment.detectedMood}${segment.moodSource === 'neutral-bed' ? '（叙事铺底）' : segment.moodSource === 'scene-context' ? '（场景建议）' : ''}${segment.moodFallback ? '（替代曲库：' + segment.mood + '）' : ''}`);
     const tracks = musicPlan.segments.map((segment) => segment.track);
     const duckIntervals = options.autoDuck && options.duckDb < 0 ? musicPlan.segments.flatMap((segment) => segment.track ? clipIntervals(intervals, segment.start, segment.end) : []) : [];
     stage('completed');
@@ -1166,10 +1258,10 @@ async function runBatch(options, logger = console) {
   const cachedLibrary = await readLibrary(musicPath, options);
   state.musicCatalog = { ...cachedLibrary.health, ...state.musicCatalog };
   const inspected = await inspectMusicCatalog(scannedGroups, options.ffprobe, options.ffmpeg, options.signal, state);
-  logger.progress?.({ stage: 'analyzing-vocals', total: videos.length });
+  if (options.strictInstrumental !== false) logger.progress?.({ stage: 'analyzing-vocals', total: videos.length });
   const libraryStarted = Date.now();
   const library = await filterLibrary(inspected.groups, options, { analyze: options.strictInstrumental !== false, signal: options.signal,
-    progress: (event) => logger.progress?.({ stage: 'analyzing-vocals', library: event, total: videos.length }),
+    progress: options.strictInstrumental !== false ? (event) => logger.progress?.({ stage: 'analyzing-vocals', library: event, total: videos.length }) : undefined,
   });
   const libraryElapsedMs = Date.now() - libraryStarted;
   const savedLibrary = await readLibrary(musicPath, options);
@@ -1177,7 +1269,9 @@ async function runBatch(options, logger = console) {
   await writeLibrary(musicPath, savedLibrary, options);
   const groups = library.groups;
   options.trackMetadata = new Map(library.files.map((entry) => [entry.file, { ...entry, duration: inspected.files.find((file) => file.file === entry.file)?.duration }]));
-  const libraryUnavailableReason = '曲库没有符合纯音乐筛选条件的曲目：' + JSON.stringify(library.counts) + '。请运行曲库分析或人工确认纯音乐；疑似人声、未扫描和失败曲目不会自动补入。' + (library.files.find((entry) => entry.analysis?.reason)?.analysis.reason || '');
+  const libraryUnavailableReason = options.strictInstrumental !== false
+    ? '曲库没有符合纯音乐筛选条件的曲目：' + JSON.stringify(library.counts) + '。请运行曲库分析或人工确认纯音乐；疑似人声、未扫描和失败曲目不会自动补入。' + (library.files.find((entry) => entry.analysis?.reason)?.analysis.reason || '')
+    : '曲库没有可参与选曲的曲目。人声筛选已关闭，请检查曲目的人工禁用状态及音乐库健康。';
   await writeState(statePath, state);
   logger.progress?.({ stage: 'scanned', total: videos.length, videosPath, musicPath, outputPath });
   const seenNames = new Set();

@@ -22,10 +22,10 @@ app.whenReady().then(async () => {
     const execute = promisify(execFile);
     await execute(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=blue:s=320x240:r=25:d=5', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=5', '-c:v', 'libvpx', '-c:a', 'libopus', '-shortest', media], { windowsHide: true });
     await execute(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-i', media, '-vn', '-c:a', 'pcm_s16le', audio], { windowsHide: true });
-    const defaults = { videos: media, music: root, output: root, modelPath: root, transcribe: false, outputAudio: true, outputVideo: true, outputTimeline: true, outputTranscript: false, minTracksPerEpisode: 1, maxTracksPerEpisode: 3, skipCompleted: true };
+    const defaults = { videos: media, music: root, output: root, modelPath: root, transcribe: false, strictInstrumental: true, preflightEnabled: true, outputAudio: true, outputVideo: true, outputTimeline: true, outputTranscript: false, minTracksPerEpisode: 1, maxTracksPerEpisode: 3, skipCompleted: true };
     const run = { config: defaults, startedAt: Date.now(), total: 60, currentIndex: 12, currentEpisode: '第12集', currentStage: 'rendering-video', settled: 11, counts: { completed: 9, skipped: 1, failed: 1, interrupted: 0 }, status: 'running', estimatedRemainingMs: null };
     const rows = Array.from({ length: 60 }, (_, i) => ({ episode: `第${i + 1}集`, status: i === 49 ? 'failed' : i < 11 ? 'completed' : 'pending', videoPath: media, duration: 5, tracks: ['calm.wav'] }));
-    const detail = { episode: '第1集', duration: 5, status: 'completed', mood: '平静 → 紧张', finalVideoExists: true, finalVideoPath: media, finalVideoUrl: pathToFileURL(media).href, outputPath: audio, audioUrl: pathToFileURL(audio).href, timelinePath: '', transcriptPath: '', transcript: [{ start: .2, end: .8, text: '第一句' }, { start: 1.2, end: 1.8, text: '小心，快跑' }], timeline: [{ start: 0, end: 1, mood: '平静', bgm_file: 'calm.wav', selection_reason: '开场对白', duckSegments: [] }, { start: 1, end: 5, mood: '紧张', bgm_file: 'tense.wav', selection_reason: '危险关键词', duckSegments: [{ start: 1.2, end: 1.8 }] }] };
+    const detail = { episode: '第1集', duration: 5, status: 'completed', mood: '平静 → 紧张', finalVideoExists: true, finalVideoPath: media, finalVideoUrl: pathToFileURL(media).href, outputPath: audio, audioUrl: pathToFileURL(audio).href, timelinePath: '', transcriptPath: '', transcript: [{ start: .2, end: .8, text: '第一句' }, { start: 1.2, end: 1.8, text: '小心，快跑' }], timeline: [{ start: 0, end: 1, mood: '平静', detected_mood: '平静', mood_source: 'neutral-bed', mood_confidence: 'low', bgm_file: 'calm.wav', selection_reason: '开场对白', duckSegments: [] }, { start: 1, end: 5, mood: '紧张', bgm_file: 'tense.wav', selection_reason: '危险关键词', duckSegments: [{ start: 1.2, end: 1.8 }] }] };
     const batch = { rows, paths: Object.fromEntries(['videos', 'music', 'output'].map((key) => [key, { status: 'available', label: '可用' }])), model: { exists: true, sizeBytes: 1024 }, tools: { ffmpeg: { available: true }, ffprobe: { available: true } }, musicGroups: [{ mood: '默认', count: 1 }], warning: null, validationError: '', inputVideoCount: 60 };
     detail.analysis = { version: 'conservative-scenes-words-v2', strictInstrumental: true, wordTimestamps: true, ducking: { enabled: true, db: -10 }, sceneCandidates: [{ time: 1, used: true }], segments: [{ start: 0, end: 5, reason: '持续对白证据', review: true }] };
     const library = { total: 2, usable: 1, musicGroups: [], emptyDirectories: [], unavailableMoods: [], duplicates: [], files: [
@@ -68,6 +68,7 @@ app.whenReady().then(async () => {
     await capture('desk.png');
     await js('document.querySelector(".nav-item[data-view=transcript]").click()');
     await waitFor('document.getElementById("final-video")?.readyState >= 1');
+    assert.equal(await js('document.querySelector(".transcript-tag").textContent'), '平静（叙事铺底）');
     await js('window.savedVideo=document.getElementById("final-video"); window.savedAudio=document.getElementById("preview-audio"); document.querySelectorAll(".transcript-line")[1].click()');
     await waitFor('Math.abs(savedVideo.currentTime - 1.2) < .1');
     await js('document.querySelector("[data-action=media-mode][data-mode=audio]").click()');
@@ -105,7 +106,10 @@ app.whenReady().then(async () => {
     await new Promise((resolve) => setTimeout(resolve, 350));
     assert.equal(await js('settingsInput === document.activeElement'), true);
     assert.equal(await js('document.getElementById("config-scenePriority").checked'), true);
-    assert.equal(await js('document.getElementById("config-maxTracksPerEpisode").disabled'), true);
+    assert.equal(await js('document.getElementById("config-maxTracksPerEpisode").disabled'), false);
+    await js('document.getElementById("config-maxTracksPerEpisode").value="7"; document.getElementById("config-maxTracksPerEpisode").dispatchEvent(new Event("change",{bubbles:true}));');
+    assert.equal(await js('Number(JSON.parse(localStorage.getItem("bgm-studio-config")).maxTracksPerEpisode)'), 7);
+    assert.equal(await js('Number(loadConfig(state.defaults).maxTracksPerEpisode)'), 7);
     assert.match(await js('document.getElementById("screen").textContent'), /转场必须换，情绪变化也换/);
     await js('document.getElementById("config-scenePriority").click()');
     assert.equal(await js('JSON.parse(localStorage.getItem("bgm-studio-config")).scenePriority'), false);
@@ -114,7 +118,7 @@ app.whenReady().then(async () => {
     await waitFor('document.getElementById("config-scenePriority")?.checked === false');
     await js('document.getElementById("config-scenePriority").click()');
     assert.equal(await js('state.config.scenePriority'), true);
-    assert.equal(await js('document.getElementById("config-maxTracksPerEpisode").disabled'), true);
+    assert.equal(await js('document.getElementById("config-maxTracksPerEpisode").disabled'), false);
     assert.match(await js('document.getElementById("screen").textContent'), /每集至少使用不同曲目/);
     assert.doesNotMatch(await js('document.getElementById("screen").textContent'), /参考下限|只作参考/);
     window.setContentSize(1440, 900);
@@ -127,12 +131,22 @@ app.whenReady().then(async () => {
     await js('document.getElementById("config-preset").value="preview"; document.getElementById("config-preset").dispatchEvent(new Event("change",{bubbles:true}));');
     await waitFor('!document.querySelector("[data-config-key=transcribe]").checked');
     assert.equal(await js('JSON.parse(localStorage.getItem("bgm-studio-config")).outputVideo'), false);
+    await js('document.querySelector("[data-config-key=strictInstrumental]").click(); document.getElementById("config-preflightEnabled").click()');
+    assert.equal(await js('state.run.config.strictInstrumental && state.run.config.preflightEnabled'), true);
     await window.reload();
     await waitFor('document.querySelectorAll("#queue-body tr").length === 60');
     assert.equal(await js('document.getElementById("top-start").textContent'), '停止批次');
     assert.equal(await js('workbenchTest.calls().filter(call => call.action === "start").length'), 0);
+    assert.equal(await js('state.config.strictInstrumental || state.config.preflightEnabled'), false);
     await js('workbenchTest.emitBatch({type:"finished",summary:{completed:9,skipped:1,failed:1},run:{...state.run,status:"finished",currentStage:"finished"}})');
     await waitFor('document.getElementById("top-start").textContent === "开始批次"');
+    await js('document.querySelector("[data-config-key=strictInstrumental]").click(); document.getElementById("config-preflightEnabled").click()');
+    await js('document.querySelector(".nav-item[data-view=settings]").click(); document.getElementById("config-maxTracksPerEpisode").value="7"; document.getElementById("config-maxTracksPerEpisode").dispatchEvent(new Event("change",{bubbles:true}));');
+    await fs.writeFile(path.join(root, 'fixture.json'), JSON.stringify({ info: { defaults, running: false, run: { ...run, status: 'finished' }, version: 'test', logs: [] }, batch, detail, library }));
+    await window.reload();
+    await waitFor('document.querySelectorAll("#queue-body tr").length === 60');
+    assert.equal(await js('Number(state.config.maxTracksPerEpisode)'), 7);
+    assert.equal(await js('state.running'), false);
     await js('document.querySelector("[data-action=check-library]").click()');
     await waitFor('document.querySelectorAll(".library-track").length === 2');
     await js('document.querySelector(".library-health > details").open=true; document.querySelector(".library-track").open=true; window.libraryAudio=document.getElementById("library-audio-0"); window.cueInput=document.getElementById("cue-0"); cueInput.value="2.5"; cueInput.focus(); document.getElementById("library-search").value="未确定"; document.getElementById("library-search").dispatchEvent(new Event("input",{bubbles:true})); workbenchTest.emitBatch({type:"log",message:"library editing stable"});');
@@ -157,6 +171,61 @@ app.whenReady().then(async () => {
     assert.equal(await js('workbenchTest.calls().some(call=>call.action === "library-stop")'), true);
     await js('state.config.minTracksPerEpisode=3; updateLive()');
     assert.equal(await js('preflightChecks().find(check=>check.name === "BGM").ok'), true);
+    await js('workbenchTest.unknownLibrary(); document.querySelector("[data-action=check-library]").click()');
+    await waitFor('state.library?.usable === 0 && !state.checkingLibrary');
+    assert.equal(await js('document.getElementById("top-start").disabled'), true);
+    await js('document.querySelector("[data-config-key=strictInstrumental]").click()');
+    await waitFor('!state.preflightPending && !document.getElementById("top-start").disabled');
+    assert.equal(await js('state.library'), null);
+    assert.equal(await js('document.querySelector("[data-action=analyze-library]").disabled'), true);
+    assert.match(await js('document.querySelector("[data-config-key=strictInstrumental]").closest(".switch-row").textContent'), /不检测、不按人声状态排除/);
+    assert.match(await js('document.getElementById("preflight-content").textContent'), /人声筛选已关闭，开启后可分析/);
+    await js('document.querySelector("[data-action=check-library]").click()');
+    await waitFor('state.library?.usable === 2 && !state.checkingLibrary');
+    await js('document.querySelector("[data-config-key=strictInstrumental]").click(); document.querySelector("[data-action=check-library]").click()');
+    await waitFor('state.library?.usable === 0 && !state.checkingLibrary');
+    assert.equal(await js('document.getElementById("top-start").disabled'), true);
+    await js('state.library=null; window.confirm=()=>true; updateLive()');
+    for (const strict of [true, false]) for (const preflight of [true, false]) {
+      await js(`for (const [key, value] of Object.entries(${JSON.stringify({ strictInstrumental: strict, preflightEnabled: preflight })})) { const input=document.querySelector('[data-config-key='+key+']'); if(input.checked!==value) input.click(); }`);
+      await waitFor('!state.preflightPending');
+      for (const [action, mode] of [['start', 'all'], ['continue-unfinished', 'unfinished'], ['retry-failed', 'failed'], ['regenerate', 'episode']]) {
+        if (!preflight) await js('state.preflightPending=true; state.data.warning="old failure"; updateLive()');
+        const before = await js('workbenchTest.calls().filter(call=>call.action==="start").length');
+        const inspections = await js('workbenchTest.calls().filter(call=>call.action==="inspect").length');
+        await js(`document.querySelector('[data-action=${action}]').click()`);
+        await waitFor(`workbenchTest.calls().filter(call=>call.action==="start").length === ${before + 1} && !state.starting`);
+        const config = await js('workbenchTest.calls().filter(call=>call.action==="start").at(-1).config');
+        assert.equal(config.strictInstrumental, strict);
+        assert.equal(config.preflightEnabled, preflight);
+        assert.equal(config.runMode, mode);
+        assert.equal(await js('workbenchTest.calls().filter(call=>call.action==="inspect").length'), inspections + Number(preflight));
+      }
+      await capture(`switches-${strict}-${preflight}.png`);
+    }
+    await js('workbenchTest.failPreflight(true); document.getElementById("config-preflightEnabled").click()');
+    await waitFor('!state.preflightPending && document.getElementById("top-start").disabled');
+    await js('workbenchTest.delayInspect(); window.oldInspectFinished=false; void refresh(true,true).then(()=>window.oldInspectFinished=true)');
+    await waitFor('state.preflightPending');
+    await js('document.getElementById("config-preflightEnabled").click()');
+    await waitFor('state.data.config?.preflightEnabled === false');
+    await js('window.disabledData=state.data; workbenchTest.releaseInspect()');
+    await waitFor('window.oldInspectFinished');
+    assert.equal(await js('state.data === window.disabledData && !document.getElementById("top-start").disabled'), true);
+    assert.doesNotMatch(await js('document.getElementById("preflight-checks").textContent'), /正在检查|等待检测|检测通过/);
+    for (const preset of ['standard', 'preview']) {
+      await js(`document.getElementById('config-preset').value='${preset}'; document.getElementById('config-preset').dispatchEvent(new Event('change',{bubbles:true}))`);
+      await waitFor('!state.preflightPending');
+      assert.equal(await js('JSON.parse(localStorage.getItem("bgm-studio-config")).preflightEnabled'), false);
+      assert.equal(await js('JSON.parse(localStorage.getItem("bgm-studio-config")).strictInstrumental'), false);
+    }
+    await window.reload();
+    await waitFor('document.getElementById("config-preflightEnabled")');
+    assert.equal(await js('document.getElementById("config-preflightEnabled").checked'), false);
+    assert.equal(await js('document.querySelector("[data-config-key=strictInstrumental]").checked'), false);
+    assert.equal(await js('workbenchTest.calls().filter(call=>call.action==="inspect").every(call=>call.config.preflightEnabled===false)'), true);
+    await js('document.getElementById("config-preflightEnabled").click(); document.querySelector("[data-config-key=strictInstrumental]").click()');
+    await waitFor('!state.preflightPending');
     await js('window.confirm=()=>false; document.querySelector("[data-action=new-batch]").click()');
     assert.equal(await js('document.getElementById("config-videos").value.length > 0'), true);
     await js('window.confirm=()=>true; document.querySelector("[data-action=new-batch]").click()');
@@ -165,7 +234,7 @@ app.whenReady().then(async () => {
     assert.equal(await js('document.getElementById("top-start").disabled'), true);
     assert.match(await js('document.getElementById("preflight-content").textContent'), /选择视频目录/);
     assert.equal(errors.length, 0, errors.join('\n'));
-    console.log('Desktop UI checks passed: reload recovery, 60-row filtering, stable editing/media, segment playback, timeline seeking, presets, diagnostics, accessibility and narrow layout.');
+    console.log('Desktop UI checks passed: four switch combinations, all start modes, stale results, persistence, library eligibility, reload recovery, stable media, accessibility and narrow layout.');
     console.log(`Screenshots: ${screenshots}`);
     window.destroy();
     app.exit(0);

@@ -8,11 +8,18 @@ const fixture = JSON.parse(fs.readFileSync(path.join(root, 'fixture.json'), 'utf
 let batchListener;
 let updateListener;
 let finishLibrary;
+let delayInspect = false;
+let finishInspect;
 const calls = [];
 
 contextBridge.exposeInMainWorld('bgmStudio', {
   appInfo: async () => fixture.info,
-  inspectBatch: async (config) => ({ ...fixture.batch, rows: config.videos ? fixture.batch.rows : [], inputVideoCount: config.videos ? 60 : 0 }),
+  inspectBatch: async (config) => {
+    calls.push({ action: 'inspect', config });
+    const batch = structuredClone(fixture.batch);
+    if (delayInspect) { delayInspect = false; await new Promise((resolve) => { finishInspect = resolve; }); }
+    return { ...batch, config, rows: config.videos ? batch.rows : [], inputVideoCount: config.videos ? 60 : 0 };
+  },
   episodeDetail: async () => fixture.detail,
   startBatch: async (config) => { calls.push({ action: 'start', config }); return { started: true, run: fixture.info.run }; },
   stopBatch: async () => { calls.push({ action: 'stop' }); return { stopped: true }; },
@@ -23,7 +30,8 @@ contextBridge.exposeInMainWorld('bgmStudio', {
   checkMusicLibrary: async (config) => {
     calls.push({ action: 'library-check', analyze: config.analyzeVocals });
     if (config.analyzeVocals) await new Promise((resolve) => { finishLibrary = resolve; });
-    return fixture.library;
+    const strict = config.strictInstrumental !== false;
+    return { ...fixture.library, strictInstrumental: strict, usable: fixture.library.files.filter((file) => file.playable && file.status !== 'disabled' && (!strict || ['instrumental', 'confirmed'].includes(file.status))).length };
   },
   stopLibraryAnalysis: async () => { calls.push({ action: 'library-stop' }); finishLibrary?.(); return { stopped: true }; },
   reviewMusicTrack: async (input) => {
@@ -52,5 +60,9 @@ contextBridge.exposeInMainWorld('workbenchTest', {
     batchListener(event);
   },
   emitUpdate: (update) => updateListener(update),
+  failPreflight: (fail) => { fixture.batch.warning = fail ? 'delayed preflight failure' : null; fixture.batch.paths.output.status = fail ? 'unavailable' : 'available'; },
+  delayInspect: () => { delayInspect = true; },
+  releaseInspect: () => { finishInspect?.(); finishInspect = null; },
+  unknownLibrary: () => { for (const file of fixture.library.files) Object.assign(file, { status: 'unknown', eligible: false }); },
   calls: () => calls,
 });

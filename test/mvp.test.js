@@ -13,6 +13,71 @@ const execFileAsync = promisify(execFile);
 const ffmpeg = process.env.FFMPEG || 'ffmpeg';
 const ffprobe = process.env.FFPROBE || 'ffprobe';
 
+test('all four switch combinations render and only screening controls vocal candidates and progress', async (t) => {
+  const { ANALYSIS_VERSION, ANALYSIS_SETTINGS, MODEL_SHA256, fingerprint, readLibrary, writeLibrary } = require('../src/music-library');
+  const { startBatch } = require('../desktop/backend/batch-service');
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bgm-switch-matrix-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const music = path.join(root, 'music');
+  const video = path.join(root, 'episode.mp4');
+  await fs.mkdir(path.join(music, '默认'), { recursive: true });
+  await fs.mkdir(path.join(music, '浪漫'));
+  const pure = path.join(music, '默认', 'pure.wav');
+  const vocal = path.join(music, '浪漫', 'cached-vocal.wav');
+  await makeAudio(pure, 440);
+  await makeAudio(vocal, 660);
+  await makeVideo(video);
+  const cache = { music, libraryCacheDir: path.join(root, 'cache') };
+  const library = { version: 1, files: {} };
+  for (const [file, status] of [[pure, 'instrumental'], [vocal, 'vocal']]) library.files[file] = { fingerprint: fingerprint(await fs.stat(file)), analysis: { version: ANALYSIS_VERSION, modelSha256: MODEL_SHA256, settings: ANALYSIS_SETTINGS, complete: true, status } };
+  await writeLibrary(music, library, cache);
+  const transcripts = path.join(root, 'transcripts');
+  await fs.mkdir(transcripts);
+  await fs.writeFile(path.join(transcripts, 'episode.json'), JSON.stringify({ segments: [{ start: 0, end: 3, text: 'I love you.' }] }));
+  let classifierCalls = 0;
+  const missingModel = path.join(root, 'missing.tflite');
+  const modelReads = [];
+  const readFile = fs.readFile;
+  t.mock.method(fs, 'readFile', async (file, ...args) => { if (file === missingModel) modelReads.push(file); return readFile(file, ...args); });
+  for (const strictInstrumental of [true, false]) for (const preflightEnabled of [true, false]) {
+    const output = path.join(root, `${strictInstrumental}-${preflightEnabled}`);
+    const events = [];
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('switch matrix run timed out')), 30000);
+      startBatch({ ...cache, videos: video, output, transcripts, ffmpeg, ffprobe, strictInstrumental, preflightEnabled, transcribe: false, scenePriority: false, outputVideo: false }, (event) => {
+        events.push(event);
+        if (['finished', 'error'].includes(event.type)) { clearTimeout(timer); event.type === 'error' ? reject(new Error(event.message)) : resolve(); }
+      }, { libraryCacheDir: cache.libraryCacheDir, vocalModelPath: missingModel, createAudioClassifier() { classifierCalls += 1; throw new Error('must not classify'); } }).catch((error) => { clearTimeout(timer); reject(error); });
+    });
+    const summary = events.at(-1).summary;
+    assert.equal(summary.completed, 1, JSON.stringify(summary));
+    assert.deepEqual(summary.results[0].tracks, [strictInstrumental ? pure : vocal]);
+    assert.equal(events.some((event) => event.stage === 'analyzing-vocals'), strictInstrumental);
+    assert.equal(events[0].config.preflightEnabled, preflightEnabled);
+    assert.match(await fs.readFile(path.join(output, 'episode_timeline.csv'), 'utf8'), strictInstrumental ? /pure.wav/ : /cached-vocal.wav/);
+    assert.ok(await wavRms(path.join(output, 'episode_bgm.wav'), .5, 2) > .001);
+  }
+  assert.equal(classifierCalls, 0);
+  assert.deepEqual(modelReads, []);
+  assert.deepEqual((await readLibrary(music, cache)).files, library.files);
+  delete library.files[vocal].analysis;
+  library.files[pure].disabled = true;
+  await writeLibrary(music, library, cache);
+  const options = { ...cache, videos: video, output: path.join(root, 'uncached'), transcripts, ffmpeg, ffprobe, strictInstrumental: false, preflightEnabled: false, vocalModelPath: missingModel, createAudioClassifier() { classifierCalls += 1; throw new Error('must not classify'); }, transcribe: false, scenePriority: false, outputVideo: false };
+  const uncached = await runBatch(options, { log() {}, error() {} });
+  assert.equal(uncached.completed, 1, JSON.stringify(uncached));
+  assert.deepEqual(uncached.results[0].tracks, [vocal]);
+  assert.equal(classifierCalls, 0);
+  assert.deepEqual(modelReads, []);
+  assert.deepEqual((await readLibrary(music, cache)).files, library.files);
+  library.files[vocal].disabled = true;
+  await writeLibrary(music, library, cache);
+  const disabled = await runBatch({ ...options, output: path.join(root, 'disabled') }, { log() {}, error() {} });
+  assert.equal(disabled.failed, 1);
+  assert.match(disabled.results[0].error, /人工禁用/);
+  assert.doesNotMatch(disabled.results[0].error, /纯音乐筛选条件/);
+});
+
 test('neutral silence renders safely and legacy completion can resume with an empty strict pool', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bgm-silence-legacy-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -147,7 +212,7 @@ test('even explicit overwrite cannot replace source videos or music', async (t) 
   await makeVideo(video);
   await makeAudio(track, 440);
   const before = await fs.readFile(track);
-  const options = { videos: root, music: root, output: root, ffmpeg, ffprobe, overwrite: true };
+  const options = { videos: root, music: root, output: root, ffmpeg, ffprobe, overwrite: true, preflightEnabled: false };
   await assert.rejects(runBatch({ strictInstrumental: false, ...options }, { log() {}, error() {} }), /输出路径与输入素材重合/);
   assert.deepEqual(await fs.readFile(track), before);
   const otherVideo = path.join(root, 'episode_final.mp4');
@@ -390,7 +455,8 @@ test('uses only persistent script mood turns and never fills the segment limit b
     options: { maxTracksPerEpisode: 3 },
     trackUses: new Map(),
   });
-  assert.equal(oneMood.segments.length, 1);
+  assert.deepEqual(oneMood.segments.map(segment => segment.detectedMood), ['浪漫', '温情']);
+  assert.equal(oneMood.segments[1].track, null, 'missing warm and neutral tracks must not hide the detected emotion');
 });
 
 test('ignores a brief isolated emotion mention between longer story sections', () => {
@@ -503,7 +569,7 @@ test('minimum picks different compatible songs, uses pauses and reports impossib
   const paused = plan({}, { segments: [{ start: 1, end: 15, text: 'Hello.' }, { start: 20, end: 55, text: 'We should talk.' }] });
   assert.equal(paused.segments[1].start, 17.5);
   assert.match(paused.segments[1].reason, /停顿/);
-  assert.deepEqual(paused.trackCount, { minimum: 2, actual: 2, segments: 2, met: true, warning: '' });
+  assert.deepEqual(paused.trackCount, { minimum: 2, maximum: 3, actual: 2, segments: 2, met: true, exceededBy: 0, warning: '' });
   const noEvidence = plan({ minTracksPerEpisode: 3 });
   assert.equal(noEvidence.trackCount.actual, 3);
   assert.ok(noEvidence.segments.every((segment) => segment.end - segment.start >= 6 && segment.track !== 'tense.wav'));
@@ -529,6 +595,9 @@ test('required scene switches keep close transitions and override the cap withou
   const plan = (options) => buildMusicPlan({ duration: 60, transcript: null, groups, sceneCuts, options, trackUses: new Map() });
   const capped = plan({ maxTracksPerEpisode: 3 });
   assert.equal(capped.segments.length, 6);
+  assert.equal(capped.trackCount.maximum, 3);
+  assert.equal(capped.trackCount.exceededBy, 3);
+  assert.match(capped.trackCount.warning, /转场必换.*上限 3 段.*实际 6 段.*超出 3 段/);
   assert.ok(capped.sceneCandidates.every((cut) => cut.required && cut.used));
   assert.ok(capped.segments.every((segment, index) => !index || segment.track !== capped.segments[index - 1].track));
   assert.equal(plan({ scenePriority: false, maxTracksPerEpisode: 3 }).segments.length, 1);
@@ -550,7 +619,7 @@ test('required scene switches keep close transitions and override the cap withou
 
 test('scene-required mode preserves emotion changes separately instead of moving them to an earlier scene', () => {
   const groups = new Map([['浪漫', ['love.wav']], ['愤怒', ['anger.wav']], ['默认', ['calm-a.wav', 'calm-b.wav']]]);
-  const options = { scenePriority: true, maxTracksPerEpisode: 1 };
+  const options = { scenePriority: true, maxTracksPerEpisode: 3 };
   const transcript = { segments: [{ start: 1, end: 10, text: '我爱你，我们相爱。' }, { start: 32, end: 40, text: '我很愤怒，无法原谅！' }] };
   const plan = buildMusicPlan({ duration: 60, transcript, groups, options, trackUses: new Map(), sceneCuts: [{ time: 18, score: 50, kind: 'cut' }] });
   assert.deepEqual(plan.segments.map((segment) => segment.start), [0, 18, 31.8]);
@@ -562,6 +631,22 @@ test('scene-required mode preserves emotion changes separately instead of moving
   assert.equal(coincident.segments[1].start, 32);
   assert.equal(coincident.segments[1].mood, '愤怒');
   assert.ok(coincident.segments[1].transition.sceneChange);
+});
+
+test('ordinary emotion changes respect the editable cap while required scenes can exceed it', () => {
+  const groups = new Map([['浪漫', ['love.wav']], ['愤怒', ['anger.wav']], ['默认', ['calm-a.wav', 'calm-b.wav']]]);
+  const transcript = { segments: [{ start: 1, end: 10, text: '我爱你，我们相爱。' }, { start: 32, end: 40, text: '我很愤怒，无法原谅！' }] };
+  const plan = (maximum, sceneCuts = []) => buildMusicPlan({ duration: 60, transcript, groups,
+    options: { scenePriority: true, maxTracksPerEpisode: maximum }, trackUses: new Map(), sceneCuts });
+  assert.equal(plan(1).segments.length, 1);
+  assert.ok(plan(2).segments.length <= 2);
+  assert.ok(plan(0).segments.length > 1);
+  const required = plan(1, [{ time: 18, score: 50, kind: 'cut' }]);
+  assert.equal(required.segments.length, 2);
+  assert.ok(required.sceneCandidates[0].used);
+  assert.equal(required.trackCount.exceededBy, 1);
+  assert.throws(() => buildMusicPlan({ duration: 60, groups, transcript, trackUses: new Map(),
+    options: { scenePriority: true, minTracksPerEpisode: 3, maxTracksPerEpisode: 2 } }), /下限.*上限/);
 });
 
 test('required scenes report missing alternative music instead of silently continuing the same track', () => {
@@ -645,8 +730,9 @@ test('batch MVP renders Chinese paths, ducking, validation, and resume', async (
   const csvBytes = await fs.readFile(csv);
   assert.deepEqual([...csvBytes.subarray(0, 3)], [0xef, 0xbb, 0xbf]);
   const csvText = csvBytes.toString('utf8');
-  assert.match(csvText, /默认/);
-  assert.match(csvText, /平稳/);
+  assert.match(csvText, /紧张/);
+  assert.match(csvText, /追逐/);
+  assert.match(csvText, /detected_mood/);
   assert.match(csvText, /duck_segments/);
   const duckedRms = await wavRms(wav, 0.7, 1.0);
   const normalRms = await wavRms(wav, 1.5, 1.8);
@@ -708,8 +794,8 @@ test('batch MVP renders Chinese paths, ducking, validation, and resume', async (
   const changedTranscript = await runBatch({ strictInstrumental: false, ...options, skipCompleted: false }, { log() {}, error() {} });
   assert.equal(changedTranscript.completed, 2);
   assert.equal(changedTranscript.skipped, 0);
-  assert.equal(changedTranscript.results.find((item) => item.episode === '第2集').mood, '默认');
-  assert.match(await fs.readFile(csv, 'utf8'), /,0,\[\],0:00,0,scene-required-with-mood-v4,/);
+  assert.equal(changedTranscript.results.find((item) => item.episode === '第2集').mood, '平静（叙事铺底）');
+  assert.match(await fs.readFile(csv, 'utf8'), /,0,\[\],0:00,0,local-context-music-v6,/);
   await fs.writeFile(finalVideo, 'broken final output', 'utf8');
   const recoveredFinal = await runBatch({ strictInstrumental: false, ...options }, { log() {}, error() {} });
   assert.equal(recoveredFinal.completed, 1);
@@ -995,7 +1081,7 @@ test('splits a long episode at a transcript mood turn and renders two BGM segmen
   assert.equal(csv.length, 3);
   assert.match(csv[1], /01_紧张_激烈冲突/);
   assert.match(csv[2], /08_悲伤_失落离别/);
-  assert.match(csv[1], /片段对白关键词/);
+  assert.match(csv[1], /对白线索/);
   assert.notEqual(csv[1].split(',')[4], csv[2].split(',')[4]);
   const media = await probe(wav);
   const audio = media.streams.find((stream) => stream.codec_name === 'pcm_s16le');
@@ -1019,11 +1105,15 @@ test('required scene renders a short switch despite the cap while the disabled m
     assert.equal(summary.completed, 1, JSON.stringify(summary));
     const result = summary.results[0];
     assert.equal(result.analysis.trackCount.actual, scenePriority ? 2 : 1);
+    assert.equal(result.analysis.trackCount.exceededBy, scenePriority ? 1 : 0);
     assert.ok(result.analysis.sceneCandidates.length);
     if (scenePriority) {
       assert.ok(result.analysis.sceneCandidates.every((cut) => cut.required && cut.used));
       assert.ok(Math.abs(result.analysis.segments[1].start - 2) < 0.05);
       assert.notEqual(result.tracks[0], result.tracks[1]);
+      assert.match(result.analysis.trackCount.warning, /转场必换.*上限 1 段.*实际 2 段.*超出 1 段/);
+      assert.match(await fs.readFile(result.timelinePath, 'utf8'), /超出 1 段/);
+      assert.match(await fs.readFile(path.join(root, String(scenePriority), 'run-report.md'), 'utf8'), /超出 1 段/);
     }
     await execFileAsync(ffmpeg, ['-v', 'error', '-i', result.finalVideoPath, '-f', 'null', '-'], { windowsHide: true });
     assert.ok(Math.abs(Number((await probe(result.finalVideoPath)).format.duration) - 4) < 0.05);

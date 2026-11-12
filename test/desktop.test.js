@@ -60,6 +60,48 @@ test('desktop preflight distinguishes unset, available, creatable, and invalid p
   assert.equal(unset.paths.output.status, 'unset');
 });
 
+test('disabled preflight reads the queue without path checks, model statistics, music scans or version probes', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bgm-preflight-off-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const video = path.join(root, 'episode.mp4');
+  const music = path.join(root, 'music');
+  const model = path.join(root, 'model');
+  await Promise.all([fs.writeFile(video, 'fixture'), fs.mkdir(music), fs.mkdir(model)]);
+  await fs.writeFile(path.join(model, 'model.bin'), 'fixture');
+  await fs.writeFile(path.join(music, 'track.wav'), 'fixture');
+  await fs.writeFile(path.join(root, '.mvp-state.json'), JSON.stringify({ episodes: { [video]: { status: 'processing' } } }));
+  const stats = [];
+  const stat = fs.stat;
+  t.mock.method(fs, 'stat', async (target, ...args) => { stats.push(target); return stat(target, ...args); });
+  const probes = [];
+  const childProcess = require('node:child_process');
+  const { promisify } = require('node:util');
+  const originalExecFile = childProcess.execFile;
+  const servicePath = require.resolve('../desktop/backend/batch-service');
+  const originalModule = require.cache[servicePath];
+  childProcess.execFile = Object.assign(() => {}, { [promisify.custom]: async (...args) => { probes.push(args); return { stdout: 'ffmpeg version fixture' }; } });
+  let service;
+  try { delete require.cache[servicePath]; service = require(servicePath); }
+  finally { childProcess.execFile = originalExecFile; require.cache[servicePath] = originalModule; }
+  const config = { videos: video, music, output: root, modelPath: model, ffmpeg: 'test-ffmpeg', ffprobe: 'test-ffprobe', transcribe: true };
+  const off = await service.inspectBatch({ ...config, preflightEnabled: false });
+  assert.equal(off.inputVideoCount, 1);
+  assert.equal(off.rows[0].status, 'interrupted');
+  assert.deepEqual(stats, [video]);
+  assert.deepEqual(probes, []);
+  assert.deepEqual(off.paths, {});
+  assert.equal(off.model, null);
+  assert.equal(off.tools, null);
+  assert.deepEqual(off.musicGroups, []);
+  assert.equal(off.config.preflightEnabled, false);
+  const on = await service.inspectBatch({ ...config, preflightEnabled: true });
+  assert.equal(on.paths.music.status, 'available');
+  assert.equal(on.model.sizeBytes, 7);
+  assert.equal(on.musicGroups[0].count, 1);
+  assert.equal(probes.length, 2);
+  assert.ok(stats.includes(music) && stats.includes(model) && stats.includes(root));
+});
+
 test('desktop batch service can stop a queued run before rendering', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bgm-desktop-stop-'));
   const videos = path.join(root, 'videos');
@@ -102,6 +144,8 @@ test('desktop defaults use packaged model and media-tool paths', () => {
   assert.equal(info.defaults.transitionFadeEnabled, true);
   assert.equal(info.defaults.transitionFadeDuration, 1);
   assert.equal(info.defaults.skipCompleted, true);
+  assert.equal(info.defaults.strictInstrumental, true);
+  assert.equal(info.defaults.preflightEnabled, true);
   assert.equal('transcriberExecutable' in info.defaults, false);
 });
 
@@ -167,8 +211,16 @@ test('concurrent starts share a lock and reload info retains run configuration',
 
 test('desktop batch settings reject invalid BGM caps and empty output selection', async () => {
   const base = { videos: 'videos', music: 'music', output: 'output', transcribe: false };
+  for (const value of ['false', 0, null]) {
+    await assert.rejects(startBatch({ ...base, preflightEnabled: value }), /开始前检测必须使用开关值/);
+    await assert.rejects(inspectBatch({ ...base, preflightEnabled: value }), /开始前检测必须使用开关值/);
+    await assert.rejects(startBatch({ ...base, preflightEnabled: false, strictInstrumental: value }), /筛选.*开关值/);
+  }
+  await assert.rejects(checkMusicLibrary({ strictInstrumental: false, analyzeVocals: true }), /人声筛选已关闭/);
+  await assert.rejects(startBatch({ ...base, videos: '', preflightEnabled: false }), /请先选择视频目录/);
   await assert.rejects(startBatch({ ...base, minTracksPerEpisode: 0 }, () => {}), /每集 BGM 下限必须是正整数/);
   await assert.rejects(startBatch({ ...base, scenePriority: false, minTracksPerEpisode: 3, maxTracksPerEpisode: 2 }, () => {}), /每集 BGM 下限不能高于上限/);
+  await assert.rejects(startBatch({ ...base, scenePriority: true, minTracksPerEpisode: 3, maxTracksPerEpisode: 2 }, () => {}), /每集 BGM 下限不能高于上限/);
   await assert.rejects(startBatch({ ...base, maxTracksPerEpisode: 2.5 }, () => {}), /每集 BGM 上限必须是非负整数/);
   await assert.rejects(startBatch({ ...base, transitionFadeEnabled: 'false' }, () => {}), /曲目衔接淡入淡出必须使用开关值/);
   await assert.rejects(startBatch({ ...base, scenePriority: 'false' }, () => {}), /转场必换曲必须使用开关值/);

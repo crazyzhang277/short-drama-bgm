@@ -24,6 +24,7 @@ const DEFAULTS = {
   minTracksPerEpisode: 1,
   scenePriority: true,
   strictInstrumental: true,
+  preflightEnabled: true,
   autoDuck: true,
   maxTracksPerEpisode: 3,
   outputAudio: true,
@@ -100,6 +101,7 @@ async function assertRunConfig(input, runtime = {}) {
     transcripts: cleanPath(input?.transcripts) || null, modelPath: cleanPath(runtime.modelPath) || cleanPath(input?.modelPath) || DEFAULTS.modelPath,
     language: cleanPath(input?.language) || 'auto', transcribe: Boolean(input?.transcribe), mood: cleanPath(input?.mood) || null, autoDuck: input?.autoDuck === undefined ? DEFAULTS.autoDuck : input.autoDuck,
     strictInstrumental: input?.strictInstrumental === undefined ? DEFAULTS.strictInstrumental : input.strictInstrumental,
+    preflightEnabled: input?.preflightEnabled === undefined ? DEFAULTS.preflightEnabled : input.preflightEnabled,
     scenePriority: input?.scenePriority === undefined ? DEFAULTS.scenePriority : input.scenePriority,
     duckDb: asNumber(input?.duckDb, -10), fadeIn: Math.max(0, asNumber(input?.fadeIn, 2)), fadeOut: Math.max(0, asNumber(input?.fadeOut, 2)), freezeTail: cleanPath(input?.freezeTail) || '0:00',
     transitionFadeEnabled: input?.transitionFadeEnabled === undefined ? DEFAULTS.transitionFadeEnabled : input.transitionFadeEnabled,
@@ -119,11 +121,12 @@ async function assertRunConfig(input, runtime = {}) {
   if (typeof config.transitionFadeEnabled !== 'boolean') throw new Error('曲目衔接淡入淡出必须使用开关值');
   if (typeof config.scenePriority !== 'boolean') throw new Error('转场必换曲必须使用开关值');
   if (typeof config.skipCompleted !== 'boolean') throw new Error('跳过已完成必须使用开关值');
-  if (typeof config.strictInstrumental !== 'boolean' || typeof config.autoDuck !== 'boolean') throw new Error('纯音乐筛选和对白压低必须使用开关值');
+  if (typeof config.preflightEnabled !== 'boolean') throw new Error('开始前检测必须使用开关值');
+  if (typeof config.strictInstrumental !== 'boolean' || typeof config.autoDuck !== 'boolean') throw new Error('人声筛选和对白压低必须使用开关值');
   if (!Number.isFinite(config.transitionFadeDuration) || config.transitionFadeDuration < 0) throw new Error('曲目衔接时长必须是非负数字');
   if (!Number.isSafeInteger(config.minTracksPerEpisode) || config.minTracksPerEpisode < 1) throw new Error('每集 BGM 下限必须是正整数');
   if (!Number.isSafeInteger(config.maxTracksPerEpisode) || config.maxTracksPerEpisode < 0) throw new Error('每集 BGM 上限必须是非负整数（0 表示不限制）');
-  if (!config.scenePriority && config.maxTracksPerEpisode > 0 && config.minTracksPerEpisode > config.maxTracksPerEpisode) throw new Error('每集 BGM 下限不能高于上限');
+  if (config.maxTracksPerEpisode > 0 && config.minTracksPerEpisode > config.maxTracksPerEpisode) throw new Error('每集 BGM 下限不能高于上限；转场必换仅在实际转场需要时允许超限');
   for (const key of ['outputAudio', 'outputVideo', 'outputTimeline', 'outputTranscript']) {
     if (input?.[key] !== undefined && typeof input[key] !== 'boolean') throw new Error('输出内容设置必须使用开关值');
   }
@@ -158,12 +161,13 @@ function stateEpisodes(state) { return state?.episodes && typeof state.episodes 
 
 async function inspectBatch(input = {}) {
   const config = { ...DEFAULTS, ...input };
+  if (typeof config.preflightEnabled !== 'boolean') throw new Error('开始前检测必须使用开关值');
   const output = cleanPath(config.output);
-  const paths = {
+  const paths = config.preflightEnabled ? {
     videos: await inspectPath(config.videos, 'videos'),
     music: await inspectPath(config.music, 'music'),
     output: await inspectPath(output, 'output'),
-  };
+  } : {};
   const state = output ? await readJson(path.join(output, '.mvp-state.json'), { episodes: {} }) : { episodes: {} };
   const summary = output ? await readJson(path.join(output, 'run-summary.json'), null) : null;
   let videos = [];
@@ -194,11 +198,11 @@ async function inspectBatch(input = {}) {
     return { episode, videoPath: sourceVideoPath, status: item.status || 'pending', duration: Number.isFinite(Number(item.duration)) ? Number(item.duration) : null, mood: item.mood || '', moods: item.moods || [], trackCount: item.analysis?.trackCount, tracks: item.tracks || (item.track ? [item.track] : []), outputAudio: item.outputAudio !== false, outputVideo: item.outputVideo !== false, outputTimeline: item.outputTimeline !== false, outputTranscript: item.outputTranscript !== false, transcribe: item.transcribe === undefined ? Boolean(config.transcribe) : Boolean(item.transcribe), outputPath: item.outputAudio === false ? '' : item.outputPath || (output ? path.join(output, `${episode}_bgm.wav`) : ''), finalVideoPath: item.outputVideo === false ? '' : item.finalVideoPath || (output ? path.join(output, `${episode}_final${extension.toLowerCase()}`) : ''), timelinePath: item.outputTimeline === false ? '' : item.timelinePath || (output ? path.join(output, `${episode}_timeline.csv`) : ''), transcriptPath: item.outputTranscript === false ? '' : typeof item.transcriptPath === 'string' ? item.transcriptPath : output ? path.join(output, `${episode}_transcript.json`) : '', error: item.error || '', updatedAt: item.updatedAt || '' };
   });
   let musicGroups = [];
-  if (cleanPath(config.music)) try { const groups = await scanMusic(cleanPath(config.music)); musicGroups = [...groups.entries()].map(([mood, tracks]) => ({ mood, count: tracks.length })); } catch (error) { warning ||= error.message; }
-  const model = await modelInfo(cleanPath(config.modelPath) || DEFAULTS.modelPath);
-  const tools = await inspectTools(config);
+  if (config.preflightEnabled && cleanPath(config.music)) try { const groups = await scanMusic(cleanPath(config.music)); musicGroups = [...groups.entries()].map(([mood, tracks]) => ({ mood, count: tracks.length })); } catch (error) { warning ||= error.message; }
+  const model = config.preflightEnabled ? await modelInfo(cleanPath(config.modelPath) || DEFAULTS.modelPath) : null;
+  const tools = config.preflightEnabled ? await inspectTools(config) : null;
   let validationError = '';
-  try { await assertRunConfig(config); } catch (error) { validationError = error.message; }
+  if (config.preflightEnabled) try { await assertRunConfig(config); } catch (error) { validationError = error.message; }
   const { createAudioClassifier, ...publicConfig } = config;
   return { config: { ...publicConfig, output }, state, summary, rows, warning, validationError, active: Boolean(activeRun), run: runSnapshot(), model, musicGroups, paths, tools, inputVideoCount: videos.length, inputVideos: videos, reportPath: output && await exists(path.join(output, 'run-report.md')) ? path.join(output, 'run-report.md') : '', errorLogPath: output && await exists(path.join(output, 'run-errors.log')) ? path.join(output, 'run-errors.log') : '' };
 }
@@ -215,6 +219,7 @@ async function inspectTools(config) {
 
 async function checkMusicLibrary(input = {}, progress) {
   if (activeRun || libraryRun) throw new Error('已有批次或曲库分析正在运行');
+  if (input.analyzeVocals && input.strictInstrumental === false) throw new Error('人声筛选已关闭，开启后可分析');
   const controller = new AbortController();
   libraryRun = controller;
   try { return await inspectLibrary(input, progress, controller.signal); }

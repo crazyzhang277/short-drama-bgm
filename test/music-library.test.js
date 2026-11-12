@@ -13,6 +13,45 @@ const { buildMusicPlan, inferMood, normalizeTranscript, parseSceneCandidates, ru
 const groups = new Map([['默认', ['neutral.wav']], ['浪漫', ['romance.wav']], ['愤怒', ['angry.wav']], ['紧张', ['tense.wav']]]);
 const frames = (seconds, vocalScore = 0, label = 'Singing') => Array.from({ length: Math.ceil(seconds / 0.975) }, (_, index) => ({ time: index * 0.975, categories: [{ label: 'Music', score: 0.95 }, { label, score: vocalScore }] }));
 
+test('short explicit emotion survives planning; contractions, topic words and polite fear do not create false moods', () => {
+  const choices = new Map([...groups, ['爽感', ['win.wav']], ['欢快', ['happy.wav']], ['伤感', ['sad.wav']]]);
+  const infer = (text) => inferMood({ segments: [{ start: 1, end: 2.5, text }] }, choices);
+  assert.equal(infer("I won't let you hurt them again.").detectedMood, '愤怒');
+  assert.equal(infer('I won!').detectedMood, '爽感');
+  assert.equal(infer("I'm scared!").detectedMood, '紧张');
+  assert.equal(infer("You're forcing him to sign.").detectedMood, '愤怒');
+  assert.equal(infer('Please call an ambulance!').detectedMood, '紧张');
+  assert.equal(infer('What are you hiding?').detectedMood, '悬疑');
+  for (const text of ["I'm afraid so.", "I'm not scared.", 'The babies cry when hungry.', 'Grandmother has arrived.', 'Margaret Fun is her name.', "Don't touch the blade.", 'Help me choose a colour.', "As long as they're safe, I'll do anything."]) {
+    assert.equal(infer(text).detectedMood, '平静', text);
+    assert.equal(infer(text).moodSource, 'neutral-bed', text);
+  }
+  assert.equal(infer("They're stable and in very good hands.").detectedMood, '温情');
+  assert.equal(infer('The kids are not safe.').detectedMood, '紧张');
+  const plan = buildMusicPlan({ duration: 60, transcript: { segments: [{ start: 1, end: 2.5, text: 'I love you.' }] },
+    groups: choices, options: { maxTracksPerEpisode: 3 }, trackUses: new Map() });
+  assert.equal(plan.segments[0].detectedMood, '浪漫');
+  assert.equal(plan.segments.at(-1).detectedMood, '平静', 'one short cue must not colour the entire episode');
+  assert.equal(plan.segments.at(-1).moodSource, 'neutral-bed');
+  assert.equal(plan.segments.at(-1).moodConfidence, 'low');
+  assert.equal(plan.segments.at(-1).mood, '默认');
+});
+
+test('local conflict, emergency and reassurance remain distinct and music fallback keeps the detected emotion', () => {
+  const transcript = { segments: [
+    { start: 1, end: 3, text: 'You stole our children!' },
+    { start: 20, end: 22, text: 'Call the police!' },
+    { start: 40, end: 42, text: "I'm here. Don't be afraid." },
+  ] };
+  const result = buildMusicPlan({ duration: 55, transcript, groups, options: { maxTracksPerEpisode: 3 }, trackUses: new Map() });
+  assert.deepEqual(result.segments.map(s => s.detectedMood), ['愤怒', '紧张', '温情']);
+  const fallback = buildMusicPlan({ duration: 12, transcript: { segments: [transcript.segments[0]] },
+    groups: new Map([['默认', ['neutral.wav']]]), options: {}, trackUses: new Map() });
+  assert.equal(fallback.segments[0].detectedMood, '愤怒');
+  assert.equal(fallback.segments[0].mood, '默认');
+  assert.match(fallback.segments[0].reason, /愤怒.*无可用.*回退/);
+});
+
 test('topic words, medical cues and negated phrases stay conservative', () => {
   for (const text of ['The wedding comes first. Grandma loves you.', "They're always fighting in there. We'll monitor the baby.", "I don't love you and I'm not happy.", "This isn't about being cruel.", '我不爱你，也不喜欢这场婚礼。']) {
     assert.equal(inferMood({ segments: [{ start: 0, end: 8, text }] }, groups).mood, '默认', text);
@@ -66,9 +105,44 @@ test('sustained conflict ends at a shot with a long pause; cuts alone keep the s
   const plan = (sceneCuts) => buildMusicPlan({ duration: 55, transcript, groups, options: {}, trackUses: new Map(), sceneCuts });
   assert.deepEqual(plan([{ time: 29.9, kind: 'cut', score: 15 }]).segments.map((segment) => segment.mood), ['愤怒', '默认']);
   assert.equal(plan([{ time: 29.9, kind: 'cut', score: 15 }]).segments[1].start, 29.9);
-  assert.equal(plan([{ time: 24.5, kind: 'cut', score: 15 }]).segments.length, 1);
+  const ordinaryCut = plan([{ time: 24.5, kind: 'cut', score: 15 }]);
+  assert.ok(ordinaryCut.segments.every(segment => segment.start !== 24.5), 'ordinary cuts alone cannot force a music switch');
+  assert.equal(ordinaryCut.segments.at(-1).detectedMood, '温情', 'new reassurance evidence is a real emotion change');
   const isolated = buildMusicPlan({ duration: 60, transcript: { segments: [{ start: 1, end: 2, text: 'Back off.' }, { start: 40, end: 42, text: 'Stop making a scene.' }] }, groups, options: {}, trackUses: new Map() });
   assert.equal(isolated.segments[0].mood, '默认');
+});
+
+test('contextual music suggestions handle emergency, coercion, grief and split ASR without an unknown label', () => {
+  const choices = new Map([...groups, ['悬疑', ['mystery.wav']], ['伤感', ['sad.wav']], ['温情', ['warm.wav']]]);
+  const cases = [
+    ['The contractions are too frequent. Get a stretcher! We must save her.', '紧张'],
+    ['You sent someone to steal our newborns! What gives you the right?', '愤怒'],
+    ["I can't let them spread lies.", '愤怒'],
+    ["We're divorced. I gave birth all by myself.", '伤感'],
+    ['The DNA results are here. Take a sample for the paternity test.', '悬疑'],
+    ['The kids are safe and sound. That is all behind you now.', '温情'],
+    ["Tell me when something's wrong. Don't carry it all by yourself.", '温情'],
+  ];
+  for (const [text, expected] of cases) assert.equal(inferMood({ segments: [{ text }] }, choices).detectedMood, expected, text);
+  const plan = (segments, sceneCuts = []) => buildMusicPlan({ duration: 48, transcript: { segments }, groups: choices,
+    options: { maxTracksPerEpisode: 3 }, trackUses: new Map(), sceneCuts });
+  const split = plan([{ start: 0, end: 1.5, text: 'She is using the press' }, { start: 1.5, end: 3, text: 'to force your' },
+    { start: 3, end: 4, text: 'hand.' }, { start: 6, end: 10, text: 'I never agreed to this.' }]);
+  assert.equal(split.segments[0].detectedMood, '愤怒');
+  const continued = plan([{ start: 0, end: 2, text: 'You stole my children!' }, { start: 3, end: 7, text: 'Explain yourself.' },
+    { start: 8, end: 12, text: 'That was your decision?' }, { start: 13, end: 20, text: 'We need to talk about this.' }]);
+  assert.ok(continued.segments.every(segment => segment.detectedMood === '愤怒'));
+  const reset = plan([{ start: 0, end: 2, text: 'You stole my children!' }, { start: 24, end: 27, text: 'Good morning.' },
+    { start: 28, end: 32, text: 'The meeting starts at nine.' }], [{ time: 22, score: 50, kind: 'cut' }]);
+  assert.equal(reset.segments.at(-1).detectedMood, '平静', 'conflict must not leak across a required scene cut');
+  for (const result of [split, continued, reset, plan([])]) for (const segment of result.segments) {
+    assert.ok(segment.detectedMood && segment.moodSource && segment.moodConfidence);
+    assert.doesNotMatch(segment.reason, /未确定/);
+  }
+  const emergency = plan([{ start: 1, end: 4, text: 'The contractions are too frequent. We need to deliver immediately.' },
+    { start: 10, end: 13, text: "As long as they're safe, I'll do anything." },
+    { start: 31, end: 34, text: "All safe. They're stable now." }]);
+  assert.deepEqual(emergency.segments.map(segment => segment.detectedMood), ['紧张', '温情']);
 });
 
 test('all human vocal classes and low-score uncertainty are excluded by strict screening', () => {
@@ -124,6 +198,26 @@ test('missing model leaves unknown music excluded and unchanged cache is reused'
   library.files[file] = { fingerprint: fingerprint(await fs.stat(file)), analysis: { version: ANALYSIS_VERSION, modelSha256: MODEL_SHA256, settings: ANALYSIS_SETTINGS, complete: true, status: 'instrumental' } };
   await writeLibrary(root, library, options);
   assert.equal((await filterLibrary(tracks, options, { analyze: true })).counts.instrumental, 1);
+});
+
+test('screening off admits vocal, unknown and failed tracks without analyzing or changing review metadata', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bgm-screening-toggle-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const files = ['instrumental', 'vocal', 'unknown', 'failed', 'disabled'].map((name) => path.join(root, name + '.wav'));
+  await promisify(execFile)(process.env.FFMPEG || 'ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2', files[0]], { windowsHide: true });
+  for (const file of files.slice(1)) await fs.copyFile(files[0], file);
+  const options = { music: root, libraryCacheDir: path.join(root, 'cache'), vocalModelPath: path.join(root, 'missing.tflite'), ffmpeg: 'must-not-decode-for-vocals', createAudioClassifier() { throw new Error('must not classify'); } };
+  const library = { version: 1, files: {} };
+  for (let i = 0; i < files.length; i += 1) library.files[files[i]] = { fingerprint: fingerprint(await fs.stat(files[i])), disabled: i === 4, cueIn: .25, intensity: 3,
+    analysis: { version: ANALYSIS_VERSION, modelSha256: MODEL_SHA256, settings: ANALYSIS_SETTINGS, status: ['instrumental', 'vocal', 'unknown', 'unknown', 'instrumental'][i], complete: i !== 3, ...(i === 3 ? { reason: 'previous analysis failed' } : {}) } };
+  await writeLibrary(root, library, options);
+  const tracks = new Map([['默认', files]]);
+  assert.deepEqual((await filterLibrary(tracks, { ...options, strictInstrumental: true })).groups.get('默认'), [files[0]]);
+  const relaxed = await filterLibrary(tracks, { ...options, strictInstrumental: false });
+  assert.deepEqual(relaxed.groups.get('默认'), files.slice(0, 4));
+  assert.deepEqual(relaxed.files.map((file) => file.status), ['instrumental', 'vocal', 'unknown', 'unknown', 'disabled']);
+  assert.deepEqual(await readLibrary(root, options), library);
+  assert.deepEqual((await filterLibrary(tracks, { ...options, strictInstrumental: true })).groups.get('默认'), [files[0]]);
 });
 
 test('full-track decoding detects vocals after a long intro, rejects sparse model output and aborts', async (t) => {
