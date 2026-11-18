@@ -1175,3 +1175,18 @@ test('minimum produces two rendered songs at a visual cut and preserves the conf
   assert.equal(state.musicCatalog[path.resolve(musicDir, '损坏.mp3')].playable, false);
   assert.equal(state.musicCatalog[path.resolve(musicDir, '静音.wav')].playable, false);
 });
+
+test('csvEscape neutralizes formula prefixes while keeping negative numbers intact and parseArgs rejects prototype keys', () => {
+  const { csvEscape, parseArgs } = require('../src/mvp');
+  assert.equal(csvEscape(-10), '-10');
+  assert.equal(csvEscape('-10.000'), '-10.000');
+  assert.equal(csvEscape('-28'), '-28');
+  assert.equal(csvEscape('=1+1'), "'=1+1");
+  assert.equal(csvEscape('+cmd|calc'), "'+cmd|calc");
+  assert.equal(csvEscape('-cmd|calc'), "'-cmd|calc");
+  assert.equal(csvEscape('@SUM(A1)'), "'@SUM(A1)");
+  assert.equal(csvEscape('\t=1'), "'\t=1");
+  assert.equal(csvEscape('\r=1'), '"\'\r=1"');
+  assert.throws(() => parseArgs(['--videos', 'v', '--music', 'm', '--output', 'o', '--constructor', 'x']), /无法识别参数/);
+  assert.throws(() => parseArgs(['--videos', 'v', '--music', 'm', '--output', 'o', '--__proto__', 'x']), /无法识别参数/);
+});

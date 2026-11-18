@@ -73,25 +73,29 @@ Set-Content -LiteralPath (Join-Path $modelTarget 'SOURCE.txt') -Encoding UTF8 -V
 
 $ffmpegArchive = Join-Path $root 'build\ffmpeg-n9.0.2-45-g1e65c6cd5d-win64-lgpl-shared-9.0.zip'
 $ffmpegUrl = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-11-03-12-50/ffmpeg-n9.0.2-45-g1e65c6cd5d-win64-lgpl-shared-9.0.zip'
-if (-not (Test-Path -LiteralPath $ffmpegArchive)) { Invoke-WebRequest -Uri $ffmpegUrl -OutFile $ffmpegArchive }
-$ffmpegHash = (Get-Sha256 $ffmpegArchive)
-if ($ffmpegHash -ne 'be035a7f1763fdab8430949bed65eab94dc91cbdea1d03607e4ac5403e73ce76') { throw 'FFmpeg archive hash mismatch; refusing to package an unverified build.' }
-$ffmpegExtract = Join-Path $root 'build\ffmpeg-n9.0.2-extract'
-Expand-Archive -LiteralPath $ffmpegArchive -DestinationPath $ffmpegExtract -Force
-$ffmpegBin = Get-ChildItem -LiteralPath $ffmpegExtract -Directory | ForEach-Object { Join-Path $_.FullName 'bin' } | Where-Object { Test-Path -LiteralPath (Join-Path $_ 'ffmpeg.exe') } | Select-Object -First 1
-if (-not $ffmpegBin) { throw 'FFmpeg archive does not contain a win64 bin directory.' }
+$ffmpegExpectedHash = 'be035a7f1763fdab8430949bed65eab94dc91cbdea1d03607e4ac5403e73ce76'
 $ffmpegTarget = Join-Path $root 'runtime\ffmpeg'
-New-Item -ItemType Directory -Force -Path $ffmpegTarget | Out-Null
-Get-ChildItem -LiteralPath $ffmpegBin -File | Where-Object { $_.Name -ne 'ffplay.exe' } | Copy-Item -Destination $ffmpegTarget -Force
-$ffmpegRoot = Split-Path -Parent $ffmpegBin
-Copy-Item -LiteralPath (Join-Path $ffmpegRoot 'LICENSE.txt') -Destination (Join-Path $ffmpegTarget 'LICENSE.txt') -Force
-Set-Content -LiteralPath (Join-Path $ffmpegTarget 'SOURCE.txt') -Encoding UTF8 -Value @(
-  'FFmpeg: n9.0.2-45-g1e65c6cd5d-20261103, win64 LGPL shared build',
-  'Build release: autobuild-2026-11-03-12-50',
-  'Source/build recipe: https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-11-03-12-50',
-  'Archive: ffmpeg-n9.0.2-45-g1e65c6cd5d-win64-lgpl-shared-9.0.zip',
-  'Archive SHA256: be035a7f1763fdab8430949bed65eab94dc91cbdea1d03607e4ac5403e73ce76'
-)
+$ffmpegStaged = (Test-Path -LiteralPath (Join-Path $ffmpegTarget 'ffmpeg.exe')) -and (Test-Path -LiteralPath (Join-Path $ffmpegTarget 'ffprobe.exe')) -and (Test-Path -LiteralPath (Join-Path $ffmpegTarget 'LICENSE.txt')) -and (Test-Path -LiteralPath (Join-Path $ffmpegTarget 'SOURCE.txt')) -and ((Get-Content -LiteralPath (Join-Path $ffmpegTarget 'SOURCE.txt') -Raw) -match [regex]::Escape("Archive SHA256: $ffmpegExpectedHash"))
+if (-not $ffmpegStaged -or (Test-Path -LiteralPath $ffmpegArchive)) {
+  if (-not (Test-Path -LiteralPath $ffmpegArchive)) { Invoke-WebRequest -Uri $ffmpegUrl -OutFile $ffmpegArchive }
+  $ffmpegHash = (Get-Sha256 $ffmpegArchive)
+  if ($ffmpegHash -ne $ffmpegExpectedHash) { throw 'FFmpeg archive hash mismatch; refusing to package an unverified build.' }
+  $ffmpegExtract = Join-Path $root 'build\ffmpeg-n9.0.2-extract'
+  Expand-Archive -LiteralPath $ffmpegArchive -DestinationPath $ffmpegExtract -Force
+  $ffmpegBin = Get-ChildItem -LiteralPath $ffmpegExtract -Directory | ForEach-Object { Join-Path $_.FullName 'bin' } | Where-Object { Test-Path -LiteralPath (Join-Path $_ 'ffmpeg.exe') } | Select-Object -First 1
+  if (-not $ffmpegBin) { throw 'FFmpeg archive does not contain a win64 bin directory.' }
+  New-Item -ItemType Directory -Force -Path $ffmpegTarget | Out-Null
+  Get-ChildItem -LiteralPath $ffmpegBin -File | Where-Object { $_.Name -ne 'ffplay.exe' } | Copy-Item -Destination $ffmpegTarget -Force
+  $ffmpegRoot = Split-Path -Parent $ffmpegBin
+  Copy-Item -LiteralPath (Join-Path $ffmpegRoot 'LICENSE.txt') -Destination (Join-Path $ffmpegTarget 'LICENSE.txt') -Force
+  Set-Content -LiteralPath (Join-Path $ffmpegTarget 'SOURCE.txt') -Encoding UTF8 -Value @(
+    'FFmpeg: n9.0.2-45-g1e65c6cd5d-20261103, win64 LGPL shared build',
+    'Build release: autobuild-2026-11-03-12-50',
+    'Source/build recipe: https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-11-03-12-50',
+    'Archive: ffmpeg-n9.0.2-45-g1e65c6cd5d-win64-lgpl-shared-9.0.zip',
+    "Archive SHA256: $ffmpegExpectedHash"
+  )
+}
 
 $pyinstaller = Join-Path $root '.venv\Scripts\pyinstaller.exe'
 if (-not (Test-Path -LiteralPath $pyinstaller)) { throw 'Missing PyInstaller. Install requirements-build.txt first.' }

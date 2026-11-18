@@ -24,7 +24,11 @@ const { promisify } = require('node:util');
   const results = [];
   for (let launch = 0; launch < 2; launch += 1) {
     const started = Date.now();
-    const child = spawn(preview, ['--remote-debugging-port=0', '--user-data-dir=' + path.join(root, 'profile')], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(preview, ['--remote-debugging-port=0', '--user-data-dir=' + path.join(root, 'profile')], {
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, BGM_LIBRARY_CACHE_DIR: path.join(root, 'cache') },
+    });
     let stderr = '';
     let socket;
     child.stderr.on('data', (bytes) => { stderr = (stderr + bytes).slice(-16000); });

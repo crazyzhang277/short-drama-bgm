@@ -286,6 +286,8 @@ app.whenReady().then(async () => {
     await js('workbenchTest.emitUpdate({status:"not-available",version:"",releaseNotes:""})');
     assert.equal(await js('document.querySelector(".update-notes")'), null);
     await js('document.querySelector(".nav-item[data-view=desk]").click()');
+    await js('state.data.rows=[{episode:"ep-xss",videoPath:"ep-xss.mp4",status:"<img src=x onerror=window.stateXss=1>",duration:10,mood:"默认",tracks:[],trackCount:{actual:"<img src=x onerror=window.stateXss=2>",segments:1}}]; updateLive()');
+    assert.equal(await js('Boolean(window.stateXss || document.querySelector("#queue-body img"))'), false);
     await js('document.getElementById("config-preflightEnabled").click(); document.querySelector("[data-config-key=strictInstrumental]").click()');
     await waitFor('!state.preflightPending');
     await js('window.confirm=()=>false; document.querySelector("[data-action=new-batch]").click()');

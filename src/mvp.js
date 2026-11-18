@@ -61,7 +61,7 @@ function parseArgs(argv) {
     const key = arg.slice(2).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
     const value = argv[++i];
     if (value === undefined || value.startsWith('--')) throw new Error(`${arg} 缺少值`);
-    if (!(key in options)) throw new Error(`无法识别参数: ${arg}`);
+    if (!Object.hasOwn(options, key)) throw new Error(`无法识别参数: ${arg}`);
     if (['duckDb', 'fadeIn', 'fadeOut'].includes(key)) {
       options[key] = Number(value);
       if (!Number.isFinite(options[key]) || options[key] < 0 && key !== 'duckDb') {
@@ -173,7 +173,7 @@ async function probeMedia(filePath, ffprobe, signal) {
     '-v', 'error',
     '-show_entries', 'format=duration:stream=codec_type,codec_name,sample_rate,channels,avg_frame_rate,r_frame_rate',
     '-of', 'json',
-    filePath,
+    path.resolve(filePath),
   ], { signal });
   let info;
   try {
@@ -846,7 +846,8 @@ function buildAudioFilter(duration, options, intervals) {
 }
 function csvEscape(value) {
   const text = String(value ?? '');
-  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  const safe = typeof value !== 'number' && !/^-?\d+(?:\.\d+)?$/.test(text) && /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
+  return /[",\n\r]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
 }
 
 function timelineCsv({ episode, segments, options, intervals, freezeTailSeconds, trackCount }) {
@@ -1370,6 +1371,7 @@ module.exports = {
   buildAudioFilter,
   buildMusicPlan,
   buildMultiTrackFilter,
+  csvEscape,
   findMoodFolder,
   freezeTailDuration,
   inferMood,

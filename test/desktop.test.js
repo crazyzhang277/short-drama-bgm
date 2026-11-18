@@ -231,3 +231,47 @@ test('desktop batch settings reject invalid BGM caps and empty output selection'
   await assert.rejects(startBatch({ ...base, maxTracksPerEpisode: 2, outputAudio: false, outputVideo: false, outputTimeline: false, outputTranscript: false }, () => {}), /请至少选择一种输出内容/);
   await assert.rejects(startBatch({ ...base, outputAudio: false, outputVideo: false, outputTimeline: false, outputTranscript: true }, () => {}), /开启本地转录/);
 });
+
+test('episodeDetail and inspectBatch confine artifact paths inside output and reject episode traversal', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bgm-path-confinement-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const output = path.join(root, 'output');
+  const outside = path.join(root, 'outside');
+  await Promise.all([fs.mkdir(output), fs.mkdir(outside)]);
+  const outsideCsv = path.join(outside, 'secret_timeline.csv');
+  const outsideJson = path.join(outside, 'secret_transcript.json');
+  const outsideExe = path.join(outside, 'evil.bat');
+  await Promise.all([
+    fs.writeFile(outsideCsv, 'episode,segment\noutside,1\n', 'utf8'),
+    fs.writeFile(outsideJson, JSON.stringify({ segments: [{ start: 0, end: 1, text: 'secret' }] }), 'utf8'),
+    fs.writeFile(outsideExe, '@echo off\n', 'utf8'),
+    fs.writeFile(path.join(output, 'ep1_timeline.csv'), 'episode,segment,start_sec,end_sec\nep1,1,0,5\n', 'utf8'),
+    fs.writeFile(path.join(output, 'run-summary.json'), JSON.stringify({ results: [{ episode: '../outside/secret' }, { episode: 'ep1' }] }), 'utf8'),
+    fs.writeFile(path.join(output, '.mvp-state.json'), JSON.stringify({
+      episodes: {
+        [path.join(root, 'videos', 'ep1.mp4')]: {
+          episode: 'ep1',
+          status: 'completed',
+          outputPath: outsideExe,
+          timelinePath: outsideCsv,
+          transcriptPath: outsideJson,
+          finalVideoPath: outsideExe,
+        },
+      },
+    }), 'utf8'),
+  ]);
+
+  const batch = await inspectBatch({ videos: '', music: '', output, preflightEnabled: false });
+  assert.deepEqual(batch.rows.map((r) => r.episode), ['ep1']);
+  assert.equal(batch.rows[0].timelinePath, path.join(output, 'ep1_timeline.csv'));
+  assert.equal(batch.rows[0].finalVideoPath, path.join(output, 'ep1_final.mp4'));
+
+  const detail = await episodeDetail({ output, episode: 'ep1' });
+  assert.equal(detail.timelinePath, path.join(output, 'ep1_timeline.csv'));
+  assert.equal(detail.transcriptPath, '');
+  assert.equal(detail.finalVideoExists, false);
+  assert.deepEqual(detail.transcript, []);
+
+  await assert.rejects(episodeDetail({ output, episode: '../outside/secret' }), /集数无效/);
+  await assert.rejects(episodeDetail({ output, episode: '..\\outside\\secret' }), /集数无效/);
+});

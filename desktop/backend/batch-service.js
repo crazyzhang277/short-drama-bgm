@@ -87,6 +87,28 @@ async function readJson(filePath, fallback = null) {
 
 function cleanPath(value) { return String(value || '').trim(); }
 function asNumber(value, fallback) { const number = Number(value); return Number.isFinite(number) ? number : fallback; }
+const AUDIO_EXT_ONLY = new Set(['.wav']);
+const CSV_EXT_ONLY = new Set(['.csv']);
+const JSON_EXT_ONLY = new Set(['.json']);
+
+function isSafeEpisodeStem(value) {
+  return typeof value === 'string' && value.length > 0 && !/[\\/:]/.test(value) && value !== '.' && value !== '..';
+}
+
+function isInsideDir(baseDir, targetPath) {
+  const base = path.resolve(baseDir);
+  const resolved = path.resolve(targetPath);
+  const rel = path.relative(base, resolved);
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+function confineArtifactPath(output, candidate, fallbackName, allowedExtensions) {
+  if (!output) return '';
+  if (typeof candidate === 'string' && candidate && isInsideDir(output, candidate) && allowedExtensions.has(path.extname(candidate).toLowerCase())) {
+    return path.resolve(candidate);
+  }
+  return path.join(output, fallbackName);
+}
 
 async function assertRunConfig(input, runtime = {}) {
   const minTracksInput = input?.minTracksPerEpisode;
@@ -183,7 +205,7 @@ async function inspectBatch(input = {}) {
   }
   for (const item of summary?.results || []) {
     const key = String(item.episode || '');
-    if (!key || [...known.values()].some((entry) => entry.episode.toLowerCase() === key.toLowerCase())) continue;
+    if (!isSafeEpisodeStem(key) || [...known.values()].some((entry) => entry.episode.toLowerCase() === key.toLowerCase())) continue;
     known.set(key.toLowerCase(), { videoPath: '', episode: key });
   }
   const rows = [...known.values()].sort((a, b) => a.episode.localeCompare(b.episode, 'zh-CN', { numeric: true })).map(({ videoPath, episode }) => {
@@ -195,7 +217,28 @@ async function inspectBatch(input = {}) {
     }
     const sourceVideoPath = videoPath || key || '';
     const extension = path.extname(sourceVideoPath) || '.mp4';
-    return { episode, videoPath: sourceVideoPath, status: item.status || 'pending', duration: Number.isFinite(Number(item.duration)) ? Number(item.duration) : null, mood: item.mood || '', moods: item.moods || [], trackCount: item.analysis?.trackCount, tracks: item.tracks || (item.track ? [item.track] : []), outputAudio: item.outputAudio !== false, outputVideo: item.outputVideo !== false, outputTimeline: item.outputTimeline !== false, outputTranscript: item.outputTranscript !== false, transcribe: item.transcribe === undefined ? Boolean(config.transcribe) : Boolean(item.transcribe), outputPath: item.outputAudio === false ? '' : item.outputPath || (output ? path.join(output, `${episode}_bgm.wav`) : ''), finalVideoPath: item.outputVideo === false ? '' : item.finalVideoPath || (output ? path.join(output, `${episode}_final${extension.toLowerCase()}`) : ''), timelinePath: item.outputTimeline === false ? '' : item.timelinePath || (output ? path.join(output, `${episode}_timeline.csv`) : ''), transcriptPath: item.outputTranscript === false ? '' : typeof item.transcriptPath === 'string' ? item.transcriptPath : output ? path.join(output, `${episode}_transcript.json`) : '', error: item.error || '', updatedAt: item.updatedAt || '' };
+    const safeEp = isSafeEpisodeStem(episode);
+    return {
+      episode,
+      videoPath: sourceVideoPath,
+      status: item.status || 'pending',
+      duration: Number.isFinite(Number(item.duration)) ? Number(item.duration) : null,
+      mood: item.mood || '',
+      moods: item.moods || [],
+      trackCount: item.analysis?.trackCount,
+      tracks: item.tracks || (item.track ? [item.track] : []),
+      outputAudio: item.outputAudio !== false,
+      outputVideo: item.outputVideo !== false,
+      outputTimeline: item.outputTimeline !== false,
+      outputTranscript: item.outputTranscript !== false,
+      transcribe: item.transcribe === undefined ? Boolean(config.transcribe) : Boolean(item.transcribe),
+      outputPath: item.outputAudio === false || !safeEp ? '' : confineArtifactPath(output, item.outputPath, `${episode}_bgm.wav`, AUDIO_EXT_ONLY),
+      finalVideoPath: item.outputVideo === false || !safeEp ? '' : confineArtifactPath(output, item.finalVideoPath, `${episode}_final${extension.toLowerCase()}`, VIDEO_EXTENSIONS),
+      timelinePath: item.outputTimeline === false || !safeEp ? '' : confineArtifactPath(output, item.timelinePath, `${episode}_timeline.csv`, CSV_EXT_ONLY),
+      transcriptPath: item.outputTranscript === false || !safeEp ? '' : confineArtifactPath(output, item.transcriptPath, `${episode}_transcript.json`, JSON_EXT_ONLY),
+      error: item.error || '',
+      updatedAt: item.updatedAt || '',
+    };
   });
   let musicGroups = [];
   if (config.preflightEnabled && cleanPath(config.music)) try { const groups = await scanMusic(cleanPath(config.music)); musicGroups = [...groups.entries()].map(([mood, tracks]) => ({ mood, count: tracks.length })); } catch (error) { warning ||= error.message; }
@@ -227,7 +270,16 @@ async function checkMusicLibrary(input = {}, progress) {
 }
 
 async function inspectLibrary(input, progress, signal) {
-  const config = { ...DEFAULTS, ...input };
+  const config = {
+    music: input?.music ?? DEFAULTS.music,
+    strictInstrumental: input?.strictInstrumental ?? DEFAULTS.strictInstrumental,
+    analyzeVocals: input?.analyzeVocals,
+    ffmpeg: input?.ffmpeg ?? DEFAULTS.ffmpeg,
+    ffprobe: input?.ffprobe ?? DEFAULTS.ffprobe,
+    vocalModelPath: input?.vocalModelPath,
+    createAudioClassifier: input?.createAudioClassifier,
+    libraryCacheDir: input?.libraryCacheDir,
+  };
   const music = cleanPath(config.music);
   if (!music || (await inspectPath(music, 'music')).status !== 'available') throw new Error('音乐目录不可读取，请重新选择；原始素材未修改。');
   let groups = new Map();
@@ -261,15 +313,26 @@ async function reviewMusicTrack(input = {}) {
   if (activeRun || libraryRun) throw new Error('请等待批次或曲库分析结束后再修改曲目');
   libraryRun = new AbortController();
   try {
-  const music = cleanPath(input.music);
+  const options = {
+    music: cleanPath(input.music),
+    file: input.file,
+    action: input.action,
+    cueIn: input.cueIn,
+    intensity: input.intensity,
+    ffprobe: cleanPath(input.ffprobe) || DEFAULTS.ffprobe,
+    vocalModelPath: input.vocalModelPath,
+    createAudioClassifier: input.createAudioClassifier,
+    libraryCacheDir: input.libraryCacheDir,
+  };
+  const music = options.music;
   const groups = await scanMusic(music);
-  if (input.action === 'metadata') {
-    if (![...groups.values()].flat().includes(path.resolve(String(input.file || '')))) throw new Error('曲目不属于当前曲库');
-    const { stdout } = await execFileAsync(cleanPath(input.ffprobe) || DEFAULTS.ffprobe, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'json', input.file], { windowsHide: true });
-    if (Number(input.cueIn) >= Number(JSON.parse(stdout).format?.duration)) throw new Error('音乐入点须小于曲目时长');
+  if (options.action === 'metadata') {
+    if (![...groups.values()].flat().includes(path.resolve(String(options.file || '')))) throw new Error('曲目不属于当前曲库');
+    const { stdout } = await execFileAsync(options.ffprobe, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'json', path.resolve(String(options.file || ''))], { windowsHide: true });
+    if (Number(options.cueIn) >= Number(JSON.parse(stdout).format?.duration)) throw new Error('音乐入点须小于曲目时长');
   }
-  await reviewTrack(music, groups, input, input);
-  const result = await filterLibrary(new Map([['reviewed', [path.resolve(input.file)]]]), { ...input, music });
+  await reviewTrack(music, groups, options, options);
+  const result = await filterLibrary(new Map([['reviewed', [path.resolve(options.file)]]]), options);
   return result.files[0];
   } finally { libraryRun = null; }
 }
@@ -331,16 +394,16 @@ function parseCsv(text) {
 async function episodeDetail(input = {}) {
   const output = cleanPath(input.output);
   const episode = cleanPath(input.episode);
-  if (!output || !episode) throw new Error('缺少输出目录或集数');
+  if (!output || !isSafeEpisodeStem(episode)) throw new Error('缺少输出目录或集数无效');
   const state = await readJson(path.join(output, '.mvp-state.json'), { episodes: {} });
   const stateEntry = Object.values(stateEpisodes(state)).find((item) => item.episode === episode)
     || Object.values(stateEpisodes(state)).find((item) => path.parse(item.outputPath || '').name === `${episode}_bgm`)
     || Object.values(stateEpisodes(state)).find((item) => path.parse(item.timelinePath || '').name === `${episode}_timeline`)
     || {};
-  const outputPath = stateEntry.outputAudio === false ? '' : stateEntry.outputPath || path.join(output, `${episode}_bgm.wav`);
-  const timelinePath = stateEntry.outputTimeline === false ? '' : stateEntry.timelinePath || path.join(output, `${episode}_timeline.csv`);
-  const transcriptPath = stateEntry.outputTranscript === false ? '' : typeof stateEntry.transcriptPath === 'string' ? stateEntry.transcriptPath : path.join(output, `${episode}_transcript.json`);
-  const finalVideoPath = stateEntry.outputVideo === false ? '' : stateEntry.finalVideoPath || path.join(output, `${episode}_final.mp4`);
+  const outputPath = stateEntry.outputAudio === false ? '' : confineArtifactPath(output, stateEntry.outputPath, `${episode}_bgm.wav`, AUDIO_EXT_ONLY);
+  const timelinePath = stateEntry.outputTimeline === false ? '' : confineArtifactPath(output, stateEntry.timelinePath, `${episode}_timeline.csv`, CSV_EXT_ONLY);
+  const transcriptPath = stateEntry.outputTranscript === false ? '' : confineArtifactPath(output, stateEntry.transcriptPath, `${episode}_transcript.json`, JSON_EXT_ONLY);
+  const finalVideoPath = stateEntry.outputVideo === false ? '' : confineArtifactPath(output, stateEntry.finalVideoPath, `${episode}_final.mp4`, VIDEO_EXTENSIONS);
   const finalVideoExists = await exists(finalVideoPath);
   const timeline = await exists(timelinePath) ? parseCsv(await fs.readFile(timelinePath, 'utf8')) : [];
   const transcriptRaw = await readJson(transcriptPath, null);
